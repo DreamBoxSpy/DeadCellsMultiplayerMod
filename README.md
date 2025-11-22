@@ -20,9 +20,7 @@ It adds **multiplayer support** via a local or virtual network: one player hosts
 Download the latest release of DCCM:  
 https://github.com/dead-cells-core-modding/core
 
-Create the following folder inside your game directory:
-
-Extract the API release into this folder.
+And install it by insctruction on page
 
 ---
 
@@ -34,17 +32,19 @@ When the game loads — simply close it.
 ---
 
 ### 3️⃣ Install the mod
-Extract the **DeadCellsMultiplayerMod** folder into mods folder:
+Extract the **DeadCellsMultiplayerMod** folder into mods folder in coremod:
 
 
 ---
 
 ### 4️⃣ Network configuration
-Open `server.txt` inside the mod folder.
+Open `server.txt` inside the DeadCellsMultiplayerMod folder.
 
 - **If you are the host:**
+    write 127.0.0.1:your_port
 
 - **If you are the client:**
+    write host_ip:host_port
 
 For internet play, use **Hamachi, Radmin VPN, ZeroTier**, or similar tools.
 
