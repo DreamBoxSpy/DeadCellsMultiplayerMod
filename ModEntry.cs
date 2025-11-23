@@ -52,11 +52,13 @@ namespace DeadCellsMultiplayerMod
         public override void Initialize()
         {
             Logger.Information("[NetMod] Initialized");
+            GameMenu.Initialize(Logger);
         }
 
         public void OnGameEndInit()
         {
             _ready = true;
+            GameMenu.SetNetRole(NetRole.None);
             Logger.Information("[NetMod] GameEndInit — ready (F5 host / F6 client)");
         }
 
@@ -252,6 +254,8 @@ namespace DeadCellsMultiplayerMod
 
                 _net = NetNode.CreateHost(Logger, ep);
                 _netRole = NetRole.Host;
+                GameMenu.SetNetRole(_netRole);
+                GameMenu.SetHostSeedBroadcaster(seed => _net?.SendSeed(seed));
 
                 var lep = _net.ListenerEndpoint;
                 if (lep != null)
@@ -263,6 +267,8 @@ namespace DeadCellsMultiplayerMod
                 _netRole = NetRole.None;
                 _net = null;
                 _hotkeysEnabled = true;
+                GameMenu.SetNetRole(_netRole);
+                GameMenu.SetHostSeedBroadcaster(null);
             }
         }
 
@@ -275,6 +281,8 @@ namespace DeadCellsMultiplayerMod
 
                 _net = NetNode.CreateClient(Logger, ep);
                 _netRole = NetRole.Client;
+                GameMenu.SetNetRole(_netRole);
+                GameMenu.SetHostSeedBroadcaster(null);
 
                 Logger.Information($"[NetMod] Client connecting to {ep.Address}:{ep.Port}");
             }
@@ -284,6 +292,8 @@ namespace DeadCellsMultiplayerMod
                 _netRole = NetRole.None;
                 _net = null;
                 _hotkeysEnabled = true;
+                GameMenu.SetNetRole(_netRole);
+                GameMenu.SetHostSeedBroadcaster(null);
             }
         }
 

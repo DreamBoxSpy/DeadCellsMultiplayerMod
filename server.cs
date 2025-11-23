@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
+using DeadCellsMultiplayerMod;
 
 public enum NetRole { None, Host, Client }
 
@@ -100,6 +101,11 @@ public sealed class NetNode : IDisposable
                 _log.Information("[NetNode] Host accepted {ep}", tcp.Client.RemoteEndPoint);
 
                 await SendLineSafe("WELCOME\n").ConfigureAwait(false);
+                if (GameMenu.TryGetKnownSeed(out var knownSeed))
+                {
+                    await SendLineSafe($"SEED|{knownSeed}\n").ConfigureAwait(false);
+                    _log.Information("[NetNode] Sent seed immediately on accept: {Seed}", knownSeed);
+                }
 
                 lock (_sync) _hasRemote = true;
 
@@ -185,9 +191,27 @@ public sealed class NetNode : IDisposable
 
                     _log.Information("[NetNode] recv line: \"{line}\"", line);
 
-                    if (line == "WELCOME" || line == "HELLO")
+                    if (line.StartsWith("WELCOME"))
                     {
                         lock (_sync) _hasRemote = true;
+                        continue;
+                    }
+
+                    if (line.StartsWith("HELLO"))
+                    {
+                        lock (_sync) _hasRemote = true;
+                        continue;
+                    }
+
+                    if (line.StartsWith("SEED|"))
+                    {
+                        var partsSeed = line.Split('|');
+                        if (partsSeed.Length >= 2 && int.TryParse(partsSeed[1], out var hostSeed))
+                        {
+                            lock (_sync) _hasRemote = true;
+                            GameMenu.SetHostSeedFromRemote(hostSeed);
+                            _log.Information("[NetNode] Received host seed {Seed}", hostSeed);
+                        }
                         continue;
                     }
 
@@ -235,6 +259,18 @@ public sealed class NetNode : IDisposable
         var line = $"{cx}|{cy}|{xr}|{yr}\n";
         _ = SendLineSafe(line);
         // _log.Information("[NetNode] sent line: {line}", line.TrimEnd());
+    }
+
+    public void SendSeed(int seed)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending seed {Seed}: no connected client", seed);
+            return;
+        }
+        var line = $"SEED|{seed}\n";
+        _ = SendLineSafe(line);
+        _log.Information("[NetNode] Sent seed {Seed}", seed);
     }
 
     public bool TryGetRemote(out int rcx, out int rcy, out double rxr, out double ryr)

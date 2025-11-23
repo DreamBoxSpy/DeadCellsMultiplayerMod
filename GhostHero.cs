@@ -320,17 +320,26 @@ namespace DeadCellsMultiplayerMod
         /// - updateLastSprPos() to resync internal last-sprite position.
         /// If these members are missing on the current ghost type, this is a no-op.
         /// </summary>
-        private void TryRefreshSpritePos(object ghost)
+       private void TryRefreshSpritePos(object ghost)
         {
             const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
             try
             {
                 var t = ghost.GetType();
 
-                // set_easeSpritePos(bool)
+                // ---------- set_easeSpritePos(bool) ----------
                 try
                 {
-                    var setEase = t.GetMethod("set_easeSpritePos", Flags, binder: null, types: new[] { typeof(bool) }, modifiers: null);
+                    var setEase = t.GetMethods(Flags)
+                        .Where(m => m.Name == "set_easeSpritePos")
+                        .Where(m =>
+                        {
+                            var ps = m.GetParameters();
+                            return ps.Length == 1 && ps[0].ParameterType == typeof(bool);
+                        })
+                        .FirstOrDefault();
+
                     if (setEase != null)
                     {
                         setEase.Invoke(ghost, new object?[] { false });
@@ -346,20 +355,31 @@ namespace DeadCellsMultiplayerMod
                             easeProp.SetValue(ghost, false);
                     }
                 }
-                catch (Exception ex) { LogCatch(ex); }
+                catch (Exception ex)
+                {
+                    _log.Warning("[HeroGhost] set_easeSpritePos failed: {Message}", ex.Message);
+                }
 
-                // updateLastSprPos()
+                // ---------- updateLastSprPos() ----------
                 try
                 {
-                    var updateLast = t.GetMethod("updateLastSprPos", Flags, binder: null, types: Type.EmptyTypes, modifiers: null);
+                    var updateLast = t.GetMethods(Flags)
+                        .Where(m => m.Name == "updateLastSprPos")
+                        .Where(m => m.GetParameters().Length == 0)
+                        .FirstOrDefault();
+
                     if (updateLast != null)
-                    {
                         updateLast.Invoke(ghost, Array.Empty<object?>());
-                    }
                 }
-                catch (Exception ex) { LogCatch(ex); }
+                catch (Exception ex)
+                {
+                    _log.Warning("[HeroGhost] updateLastSprPos failed: {Message}", ex.Message);
+                }
             }
-            catch (Exception ex) { LogCatch(ex); }
+            catch (Exception ex)
+            {
+                _log.Warning("[HeroGhost] TryRefreshSpritePos exception: {Message}", ex.Message);
+            }
         }
 
         public void Reset()
