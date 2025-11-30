@@ -4,8 +4,11 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Serilog;
 using DeadCellsMultiplayerMod;
+using HaxeProxy.Runtime;
+using Newtonsoft.Json;
+using Serilog;
+using dc;
 
 public enum NetRole { None, Host, Client }
 
@@ -34,6 +37,7 @@ public sealed class NetNode : IDisposable
     public bool IsAlive =>
         (_role == NetRole.Host && _listener != null) ||
         (_role == NetRole.Client && _client   != null);
+    public bool IsHost => _role == NetRole.Host;
 
     // Новое свойство для реального адреса хоста
     public IPEndPoint? ListenerEndpoint =>
@@ -218,6 +222,30 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("RUNPARAMS|"))
+                    {
+                        var payload = line["RUNPARAMS|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        GameMenu.ReceiveRunParams(payload);
+                        continue;
+                    }
+
+                    if (line.StartsWith("GDATA|"))
+                    {
+                        var payload = line["GDATA|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        ReceiveGameData(payload);
+                        continue;
+                    }
+
+                    if (line.StartsWith("GDB|"))
+                    {
+                        var payload = line["GDB|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        ReceiveGameDataBytes(payload);
+                        continue;
+                    }
+
                     var parts = line.Split('|');
                     if (parts.Length == 4 &&
                         int.TryParse(parts[0], out var cx) &&
@@ -274,6 +302,83 @@ public sealed class NetNode : IDisposable
         var line = $"SEED|{seed}\n";
         _ = SendLineSafe(line);
         _log.Information("[NetNode] Sent seed {Seed}", seed);
+    }
+
+    public void SendRunParams(string json)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending run params: no connected client");
+            return;
+        }
+
+        SendRaw("RUNPARAMS|" + json);
+        _log.Information("[NetNode] Sent run params payload");
+    }
+
+    public void SendGameData(string json)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending GameData: no connected client");
+            return;
+        }
+
+        SendRaw("GDATA|" + json);
+        _log.Information("[NetNode] Sent GameData payload ({Length} bytes)", json.Length);
+    }
+
+    public void ReceiveGameData(string json)
+    {
+        try
+        {
+            var sync = JsonConvert.DeserializeObject<GameDataSync>(json);
+            if (sync != null)
+            {
+                GameMenu.ApplyGameDataSync(sync);
+                _log.Information("[NetNode] Applied GameDataSync");
+            }
+            else
+            {
+                _log.Warning("[NetNode] Received GameData, but deserializer returned null");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Error("[NetNode] Failed to apply GameDataSync: {Message}", ex);
+        }
+    }
+
+    public void SendGameDataBytes(byte[] bytes)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending GameData bytes: no connected client");
+            return;
+        }
+
+        var b64 = Convert.ToBase64String(bytes);
+        SendRaw("GDB|" + b64);
+        _log.Information("[NetNode] Sent GameData bytes ({Length} bytes)", bytes.Length);
+    }
+
+    private void ReceiveGameDataBytes(string b64)
+    {
+        try
+        {
+            var bytes = Convert.FromBase64String(b64);
+            ModEntry.OnClientReceiveGameData(bytes);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("[NetNode] Failed to receive GameData bytes: {Error}", ex);
+        }
+    }
+
+    private void SendRaw(string payload)
+    {
+        var line = payload.EndsWith('\n') ? payload : payload + "\n";
+        _ = SendLineSafe(line);
     }
 
     public bool TryGetRemote(out int rcx, out int rcy, out double rxr, out double ryr)
