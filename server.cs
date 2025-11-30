@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Globalization;
 using DeadCellsMultiplayerMod;
 using HaxeProxy.Runtime;
 using Newtonsoft.Json;
@@ -175,9 +176,20 @@ public sealed class NetNode : IDisposable
 
         try
         {
-            while (!ct.IsCancellationRequested && _stream != null)
+            while (!ct.IsCancellationRequested)
             {
-                int n = await _stream.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
+                var stream = _stream;
+                var sock = _client?.Client;
+                if (stream == null || sock == null) break;
+
+                // Non-blocking poll
+                if (!sock.Poll(0, SelectMode.SelectRead) || sock.Available == 0)
+                {
+                    await Task.Yield();
+                    continue;
+                }
+
+                int n = await stream.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
                 if (n <= 0) break;
 
                 sb.Append(Encoding.UTF8.GetString(buf, 0, n));
@@ -258,8 +270,8 @@ public sealed class NetNode : IDisposable
                     if (parts.Length == 4 &&
                         int.TryParse(parts[0], out var cx) &&
                         int.TryParse(parts[1], out var cy) &&
-                        double.TryParse(parts[2], out var xr) &&
-                        double.TryParse(parts[3], out var yr))
+                        double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var xr) &&
+                        double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var yr))
                     {
                         lock (_sync)
                         {
@@ -297,7 +309,6 @@ public sealed class NetNode : IDisposable
         if (_stream == null || _client == null || !_client.Connected) return;
         var line = $"{cx}|{cy}|{xr}|{yr}\n";
         _ = SendLineSafe(line);
-        // _log.Information("[NetNode] sent line: {line}", line.TrimEnd());
     }
 
     public void SendSeed(int seed)
