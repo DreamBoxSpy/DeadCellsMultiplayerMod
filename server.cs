@@ -112,6 +112,7 @@ public sealed class NetNode : IDisposable
                 }
 
                 lock (_sync) _hasRemote = true;
+                GameMenu.NotifyRemoteConnected(_role);
 
                 _recvTask = Task.Run(() => RecvLoop(ct));
                 break;
@@ -155,6 +156,7 @@ public sealed class NetNode : IDisposable
                 await SendLineSafe("HELLO\n").ConfigureAwait(false);
 
                 lock (_sync) _hasRemote = true;
+                GameMenu.NotifyRemoteConnected(_role);
 
                 _recvTask = Task.Run(() => RecvLoop(ct));
                 return;
@@ -266,6 +268,12 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("KICK"))
+                    {
+                        GameMenu.NotifyRemoteDisconnected(_role);
+                        break;
+                    }
+
                     var parts = line.Split('|');
                     if (parts.Length == 4 &&
                         int.TryParse(parts[0], out var cx) &&
@@ -286,6 +294,11 @@ public sealed class NetNode : IDisposable
         catch (Exception ex)
         {
             _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
+        }
+        finally
+        {
+            lock (_sync) _hasRemote = false;
+            GameMenu.NotifyRemoteDisconnected(_role);
         }
     }
 
@@ -359,19 +372,26 @@ public sealed class NetNode : IDisposable
         _log.Information("[NetNode] Sent GameData payload ({Length} bytes)", json.Length);
     }
 
+    public void SendKick()
+    {
+        if (_stream == null || _client == null || !_client.Connected) return;
+        SendRaw("KICK");
+    }
+
     public void ReceiveGameData(string json)
     {
-        try
-        {
-            var sync = JsonConvert.DeserializeObject<GameDataSync>(json);
-            if (sync != null)
+            try
             {
-                GameMenu.ApplyGameDataSync(sync);
-                _log.Information("[NetNode] Applied GameDataSync");
-            }
-            else
-            {
-                _log.Warning("[NetNode] Received GameData, but deserializer returned null");
+                var sync = JsonConvert.DeserializeObject<GameDataSync>(json);
+                if (sync != null)
+                {
+                    GameMenu.ApplyGameDataSync(sync);
+                    GameMenu.NotifyGameDataReceived();
+                    _log.Information("[NetNode] Applied GameDataSync");
+                }
+                else
+                {
+                    _log.Warning("[NetNode] Received GameData, but deserializer returned null");
             }
         }
         catch (Exception ex)

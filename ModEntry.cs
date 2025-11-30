@@ -10,7 +10,6 @@ using System;
 using System.IO;
 using System.Net;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Linq;
 using Newtonsoft.Json;
 
@@ -23,14 +22,10 @@ namespace DeadCellsMultiplayerMod
         IOnFrameUpdate,
         IOnAfterLoadingSave
     {
+        public static ModEntry? Instance { get; private set; }
         private static byte[]? _pendingGameData;
         private static GameDataSync? _cachedGameDataSync;
-        private const int VK_F5 = 0x74; // Host
-        private const int VK_F6 = 0x75; // Client
-        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
-
         private bool _ready;
-        private bool _hotkeysEnabled = true;
 
         private HaxeObject? _heroRef;
         private object? _lastLevelRef;
@@ -40,10 +35,6 @@ namespace DeadCellsMultiplayerMod
 
         private NetRole _netRole = NetRole.None;
         private NetNode? _net;
-
-        private bool _prevF5, _prevF6;
-        private double _hotkeyCd;
-        private const double HotkeyCooldown = 0.25;
 
         private int _lastSentCx = int.MinValue;
         private int _lastSentCy = int.MinValue;
@@ -56,6 +47,7 @@ namespace DeadCellsMultiplayerMod
         private const double GhostLogInterval = 5.0;
         public override void Initialize()
         {
+            Instance = this;
             Logger.Information("[NetMod] Initialized");
             GameMenu.Initialize(Logger);
         }
@@ -66,7 +58,7 @@ namespace DeadCellsMultiplayerMod
             GameMenu.AllowGameDataHooks = false;
             GameMenu.SetRole(NetRole.None);
             var seed = GameMenu.ForceGenerateServerSeed("OnGameEndInit");
-            Logger.Information("[NetMod] GameEndInit - ready (F5 host / F6 client) seed={Seed}", seed);
+            Logger.Information("[NetMod] GameEndInit - ready (use menu) seed={Seed}", seed);
         }
 
 
@@ -218,6 +210,7 @@ namespace DeadCellsMultiplayerMod
         {
             _pendingGameData = bytes;
             Log.Information("[NetMod] Client received GameData blob ({0} bytes)", bytes.Length);
+            GameMenu.NotifyGameDataReceived();
             ApplyGameDataBytes(bytes);
         }
 
@@ -254,66 +247,36 @@ namespace DeadCellsMultiplayerMod
         {
             if (!_ready) return;
 
-            if (_hotkeysEnabled)
-            {
-                _hotkeyCd -= dt;
-                if (_hotkeyCd < 0) _hotkeyCd = 0;
-
-                bool f5Now = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
-                bool f6Now = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
-                bool f5Edge = f5Now && !_prevF5 && _hotkeyCd <= 0;
-                bool f6Edge = f6Now && !_prevF6 && _hotkeyCd <= 0;
-
-                if (f5Edge)
-                {
-                    Logger.Information("[NetMod] F5 (Host) pressed");
-                    TryStartHost();
-                    _hotkeyCd = HotkeyCooldown;
-                    _hotkeysEnabled = false;
-                }
-                if (f6Edge)
-                {
-                    Logger.Information("[NetMod] F6 (Client) pressed");
-                    TryStartClient();
-                    _hotkeyCd = HotkeyCooldown;
-                    _hotkeysEnabled = false;
-                }
-
-                _prevF5 = f5Now;
-                _prevF6 = f6Now;
-            }
+            GameMenu.TickMenu(dt);
         }
 
-        private IPEndPoint GetHostFromFile()
+        private IPEndPoint BuildEndpoint(string ipText, int port)
         {
-            try
+            if (port <= 0 || port > 65535) port = 1234;
+            if (!IPAddress.TryParse(ipText, out var ip))
             {
-                var baseDir = AppContext.BaseDirectory;
-                var root = Directory.GetParent(baseDir)?.Parent?.Parent?.Parent?.FullName ?? baseDir;
-                var path = Path.Combine(root, "mods", "DeadCellsMultiplayerMod", "server.txt");
-                Log.Information(path);
-                if (!File.Exists(path)) return new IPEndPoint(IPAddress.Loopback, 1234);
-
-                var parts = File.ReadAllText(path).Trim().Split(':', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length != 2) return new IPEndPoint(IPAddress.Loopback, 1234);
-
-                if (!IPAddress.TryParse(parts[0], out var ip)) ip = IPAddress.Loopback;
-                if (!int.TryParse(parts[1], out var port)) port = 1234;
-
-                return new IPEndPoint(ip, port);
+                ip = IPAddress.Loopback;
             }
-            catch
-            {
-                return new IPEndPoint(IPAddress.Loopback, 1234);
-            }
+            return new IPEndPoint(ip, port);
         }
 
-        private void TryStartHost()
+        public void StartHostFromMenu(string ipText, int port)
+        {
+            var ep = BuildEndpoint(ipText, port);
+            StartHostWithEndpoint(ep);
+        }
+
+        public void StartClientFromMenu(string ipText, int port)
+        {
+            var ep = BuildEndpoint(ipText, port);
+            StartClientWithEndpoint(ep);
+        }
+
+        private void StartHostWithEndpoint(IPEndPoint ep)
         {
             try
             {
                 _net?.Dispose();
-                var ep = GetHostFromFile();
 
                 _net = NetNode.CreateHost(Logger, ep);
                 _netRole = NetRole.Host;
@@ -329,17 +292,15 @@ namespace DeadCellsMultiplayerMod
                 Logger.Error($"[NetMod] Host start failed: {ex.Message}");
                 _netRole = NetRole.None;
                 _net = null;
-                _hotkeysEnabled = true;
                 GameMenu.SetRole(_netRole);
             }
         }
 
-        private void TryStartClient()
+        private void StartClientWithEndpoint(IPEndPoint ep)
         {
             try
             {
                 _net?.Dispose();
-                var ep = GetHostFromFile();
 
                 _net = NetNode.CreateClient(Logger, ep);
                 _netRole = NetRole.Client;
@@ -353,9 +314,21 @@ namespace DeadCellsMultiplayerMod
                 Logger.Error($"[NetMod] Client start failed: {ex.Message}");
                 _netRole = NetRole.None;
                 _net = null;
-                _hotkeysEnabled = true;
                 GameMenu.SetRole(_netRole);
             }
+        }
+
+        public void StopNetworkFromMenu()
+        {
+            try
+            {
+                _net?.Dispose();
+            }
+            catch { }
+            _net = null;
+            _netRole = NetRole.None;
+            GameMenu.NetRef = null;
+            GameMenu.SetRole(_netRole);
         }
 
         private static object? ExtractGameFromLevel(object? levelObj)
