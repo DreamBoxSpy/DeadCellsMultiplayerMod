@@ -55,6 +55,8 @@ namespace DeadCellsMultiplayerMod
 
         public static NetNode? NetRef { get; set; }
         private static GameDataSync? _lastAppliedSync;
+        private static string? _lastGeneratePayloadJson;
+        private static object? _cachedRawLevelDesc;
 
         private const string LevelDescTypeName = "Hashlink.Virtuals.virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_";
         private const string RunDataVirtualTypeName = "Hashlink.Virtuals.virtual_bossRune_endKind_forge_hasMods_history_isCustom_meta_runNum_";
@@ -123,6 +125,49 @@ namespace DeadCellsMultiplayerMod
             {
                 _log?.Warning("[NetMod] Failed to log LevelDescSync: {Message}", ex.Message);
             }
+        }
+
+        private static void CopyObjectMembers(object? src, object? dst)
+        {
+            if (src == null || dst == null) return;
+
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var srcType = src.GetType();
+            var dstType = dst.GetType();
+
+            try
+            {
+                foreach (var f in srcType.GetFields(Flags))
+                {
+                    try
+                    {
+                        var val = f.GetValue(src);
+                        var df = dstType.GetField(f.Name, Flags);
+                        if (df != null && (val == null || df.FieldType.IsInstanceOfType(val)))
+                        {
+                            df.SetValue(dst, val);
+                        }
+                    }
+                    catch { }
+                }
+
+                foreach (var p in srcType.GetProperties(Flags))
+                {
+                    try
+                    {
+                        if (!p.CanRead) continue;
+                        var dp = dstType.GetProperty(p.Name, Flags);
+                        if (dp == null || !dp.CanWrite) continue;
+                        var val = p.GetValue(src);
+                        if (val == null || dp.PropertyType.IsInstanceOfType(val))
+                        {
+                            dp.SetValue(dst, val);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private static string BuildRunDataJson(RunParams rp)
@@ -210,6 +255,9 @@ namespace DeadCellsMultiplayerMod
             lock (Sync)
             {
                 _inActualRun = true;
+                _pendingAutoStart = false;
+                _autoStartTriggered = false;
+                _genArrived = false;
                 syncToApply = _cachedGameDataSync != null ? CloneSync(_cachedGameDataSync) : null;
                 rp = _latestResolvedRunParams;
                 roleCopy = _role;
@@ -435,7 +483,7 @@ namespace DeadCellsMultiplayerMod
             dc.tool.GameData self,
             Serializer ser)
         {
-            orig(self, ser); // after this, GameData is fully loaded
+            orig(self, ser);
 
             if (!AllowGameDataHooks)
                 return;
@@ -1040,13 +1088,7 @@ namespace DeadCellsMultiplayerMod
         {
             try
             {
-                // If client is still in menu, defer application but cache for use in newGame.
-                bool defer;
                 RunParams? rpFromSync = null;
-                lock (Sync)
-                {
-                    defer = _role == NetRole.Client && !_inActualRun && !_gameDataSyncReady;
-                }
 
                 try
                 {
@@ -1054,26 +1096,26 @@ namespace DeadCellsMultiplayerMod
                 }
                 catch { }
 
-                if (defer)
+                var game = ModCore.Modules.Game.Instance;
+                var gd = game != null
+                    ? GetMemberValue(game, "gameData", ignoreCase: true) as dc.tool.GameData
+                    : null;
+
+                if (gd != null)
+                {
+                    if (rpFromSync == null) rpFromSync = BuildRunParamsFromSync(sync);
+                    ApplyGameDataSyncToInstance(gd, sync, rpFromSync);
+                    _log?.Information("[NetMod] Applied GameDataSync from host.");
+                }
+                else
                 {
                     if (rpFromSync != null)
                     {
                         UpdateResolvedRunParams(rpFromSync, fromNetwork: true);
                     }
                     CacheGameDataSync(sync);
-                    _log?.Information("[NetMod] Cached GameDataSync (deferred apply until run)");
-                    return;
+                    _log?.Information("[NetMod] Cached GameDataSync (no GameData instance yet)");
                 }
-
-                var game = ModCore.Modules.Game.Instance;
-                if (game == null) return;
-                var gd = GetMemberValue(game, "gameData", ignoreCase: true) as dc.tool.GameData;
-                if (gd == null) return;
-
-                if (rpFromSync == null) rpFromSync = BuildRunParamsFromSync(sync);
-                ApplyGameDataSyncToInstance(gd, sync, rpFromSync);
-
-                _log?.Information("[NetMod] Applied GameDataSync from host.");
             }
             catch (Exception ex)
             {
@@ -2498,6 +2540,24 @@ namespace DeadCellsMultiplayerMod
             return value;
         }
 
+        private static string? TrySerializeObject(object obj)
+        {
+            try
+            {
+                var settings = new JsonSerializerSettings
+                {
+                    ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+                    Error = (sender, args) => { args.ErrorContext.Handled = true; }
+                };
+                return JsonConvert.SerializeObject(obj, settings);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to serialize object: {Message}", ex.Message);
+                return null;
+            }
+        }
+
         private static void ClearArray(object arrayObj)
         {
             if (arrayObj == null) return;
@@ -3283,10 +3343,40 @@ namespace DeadCellsMultiplayerMod
                     }
                 }
             }
+            TryGetResolvedRunParams(out runParams);
 
-            if (roleCopy == NetRole.Host && !TryGetResolvedRunParams(out runParams))
+            // Fallback: build run params from cached sync / GameData, similar to newGame hook
+            if (runParams == null || (runParams.Data != null && RunParamsIncomplete(runParams.Data)))
             {
-                _log?.Warning("[NetMod] Host missing cached run params; skipping send this generate");
+                RunParams? rpFix = null;
+
+                var syncCached = GetCachedGameDataSync();
+                if (syncCached != null)
+                {
+                    rpFix = BuildRunParamsFromSync(syncCached);
+                }
+
+                if (rpFix == null)
+                {
+                    var gd = GetMemberValue(user, "gameData", ignoreCase: true) as dc.tool.GameData;
+                    if (gd != null)
+                    {
+                        try
+                        {
+                            var sync = BuildGameDataSync(gd);
+                            CacheGameDataSync(sync);
+                            rpFix = BuildRunParamsFromSync(sync);
+                        }
+                        catch { }
+                    }
+                }
+
+                if (rpFix != null)
+                {
+                    UpdateResolvedRunParams(rpFix, fromNetwork: false);
+                    runParams = new RunParamsResolved { Data = rpFix };
+                    _log?.Information("[NetMod] GenerateHook patched run params from GameData");
+                }
             }
 
             // CLIENT WAIT
@@ -3306,7 +3396,7 @@ namespace DeadCellsMultiplayerMod
                 }
             }
 
-            if (roleCopy == NetRole.Client && !TryGetResolvedRunParams(out runParams))
+            if (roleCopy == NetRole.Client && runParams == null)
             {
                 _log?.Information("[NetMod] Client waiting for run params (LevelGen.generate)...");
                 if (!WaitForRunParams(TimeSpan.FromSeconds(2), out runParams))
@@ -3317,6 +3407,33 @@ namespace DeadCellsMultiplayerMod
                 {
                     _log?.Information("[NetMod] Client received run params during generate");
                 }
+            }
+
+            // Ensure run params are applied to local GameData before generation (client path)
+            if (roleCopy == NetRole.Client && runParams?.Data != null)
+            {
+                try
+                {
+                    var gdInst = GetGameDataInstance();
+                    if (gdInst != null)
+                    {
+                        ApplyRunParamsToGameData(gdInst, runParams.Data);
+                        ApplyRunParamsToMember(gdInst, "runParams", runParams.Data);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log?.Warning("[NetMod] Failed to apply run params before generate: {Message}", ex.Message);
+                }
+            }
+
+            if (runParams?.Data != null)
+            {
+                LogRunParams("Run params (generate)", runParams.Data);
+            }
+            else
+            {
+                _log?.Warning("[NetMod] Run params (generate) missing");
             }
 
             if (roleCopy == NetRole.Host && runParams != null)
@@ -3425,7 +3542,68 @@ namespace DeadCellsMultiplayerMod
             if (_origInvoker == null)
                 throw new InvalidOperationException("Hook_LevelGen.generate invoker is not initialized");
 
-            return _origInvoker(orig, self, user, ldat, desc, resetCount);
+            ldat = final;
+
+            var result = _origInvoker(orig, self, user, ldat, desc, resetCount);
+
+            if (roleCopy == NetRole.Host)
+            {
+                try
+                {
+                    var ldSync = BuildLevelDescSync(desc);
+                    string? rawDesc = TrySerializeObject(desc);
+
+                    if (!IsChallengeLevel(ldSync.LevelId))
+                    {
+                        CacheLevelDescSync(ldSync);
+                        var runParamsData = runParams?.Data;
+                        if (runParamsData == null && TryGetResolvedRunParams(out var cachedRp) && cachedRp != null)
+                        {
+                            runParamsData = cachedRp.Data;
+                        }
+
+                        if (string.IsNullOrWhiteSpace(rawDesc))
+                        {
+                            try
+                            {
+                                rawDesc = HaxeProxySerializer.Serialize(desc);
+                            }
+                            catch (Exception ex)
+                            {
+                                _log?.Warning("[NetMod] Failed to hxbit-serialize LevelDesc: {Message}", ex.Message);
+                            }
+                        }
+
+                        var payload = new
+                        {
+                            levelDesc = ldSync,
+                            runParams = runParamsData,
+                            rawDesc
+                        };
+                        var json = JsonConvert.SerializeObject(payload);
+                        _lastGeneratePayloadJson = json;
+
+                        if (NetRef != null)
+                        {
+                            NetRef.SendGeneratePayload(json);
+                            _log?.Information("[NetMod] Host sent generate payload (LevelGen.generate)");
+                        }
+                        else
+                        {
+                            _log?.Information("[NetMod] Cached generate payload (no client connected)");
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(rawDesc))
+                        _log?.Information("[NetMod] Host generate raw LevelDesc: {Json}", rawDesc);
+                }
+                catch (Exception ex)
+                {
+                    _log?.Warning("[NetMod] Failed to send generate payload: {Message}", ex.Message);
+                }
+            }
+
+            return result;
         }
 
         private static void SendLevelDescToClient(object desc)
@@ -3448,6 +3626,50 @@ namespace DeadCellsMultiplayerMod
             catch (Exception ex)
             {
                 _log?.Warning("[NetMod] Host failed to send LevelDesc: {Message}", ex.Message);
+            }
+        }
+
+        public static void SendCachedGeneratePayload()
+        {
+            var net = NetRef;
+            if (net == null)
+                return;
+
+            var payloadJson = _lastGeneratePayloadJson;
+
+            // Rebuild from cached pieces if we have no stored JSON
+            if (string.IsNullOrWhiteSpace(payloadJson))
+            {
+                var ld = GetCachedLevelDescSync();
+                TryGetResolvedRunParams(out var rp);
+
+                if (ld != null || rp != null)
+                {
+                    // Do not resend challenge payloads
+                    if (ld == null || !IsChallengeLevel(ld.LevelId))
+                    {
+                        payloadJson = JsonConvert.SerializeObject(new
+                        {
+                            levelDesc = ld,
+                            runParams = rp?.Data,
+                            rawDesc = (string?)null
+                        });
+                        _lastGeneratePayloadJson = payloadJson;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(payloadJson))
+                return;
+
+            try
+            {
+                net.SendGeneratePayload(payloadJson);
+                _log?.Information("[NetMod] Re-sent cached generate payload to client");
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to re-send cached generate payload: {Message}", ex.Message);
             }
         }
     }

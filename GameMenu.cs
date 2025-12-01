@@ -2,6 +2,8 @@ using System;
 using System.Net;
 using System.Reflection;
 using System.IO;
+using System.Collections.Generic;
+using System.Linq;
 using dc.pr;
 using dc.ui;
 using HaxeProxy.Runtime;
@@ -26,8 +28,16 @@ namespace DeadCellsMultiplayerMod
         private static bool _suppressAutoButton;
         private static bool _worldExitHandled;
         private static string _username = "guest";
+        private static string _playerId = Guid.NewGuid().ToString("N");
+        public static string Username => _username;
+        public static string PlayerId => _playerId;
+        private static bool _localReady;
+        private static readonly Dictionary<string, PlayerInfo> _clientPlayers = new();
+        private static List<PlayerInfo> _playersDisplay = new();
         private static bool _inHostStatusMenu;
         private static bool _inClientWaitingMenu;
+        private static GameDataSync? _clientSaveBackup;
+        private static bool _genArrived;
 
         private static void InitializeMenuUiHooks()
         {
@@ -54,9 +64,11 @@ namespace DeadCellsMultiplayerMod
             lock (Sync)
             {
                 if (_role == NetRole.Client &&
+                    !_inActualRun &&
                     _pendingAutoStart &&
                     _levelDescArrived &&
                     _gameDataArrived &&
+                    _genArrived &&
                     !_autoStartTriggered)
                 {
                     _autoStartTriggered = true;
@@ -99,8 +111,11 @@ namespace DeadCellsMultiplayerMod
         {
             lock (Sync)
             {
-                _gameDataArrived = true;
-                _pendingAutoStart = true;
+                if (_role == NetRole.Client && !_inActualRun)
+                {
+                    _gameDataArrived = true;
+                    _pendingAutoStart = true;
+                }
             }
         }
 
@@ -108,8 +123,11 @@ namespace DeadCellsMultiplayerMod
         {
             lock (Sync)
             {
-                _levelDescArrived = true;
-                _pendingAutoStart = true;
+                if (_role == NetRole.Client && !_inActualRun)
+                {
+                    _levelDescArrived = true;
+                    _pendingAutoStart = true;
+                }
             }
         }
 
@@ -291,6 +309,7 @@ namespace DeadCellsMultiplayerMod
                 }
                 else if (role == NetRole.Client)
                 {
+                    BackupClientSave();
                     ModEntry.Instance.StartClientFromMenu(_mpIp, _mpPort);
                     lock (Sync)
                     {
@@ -372,6 +391,11 @@ namespace DeadCellsMultiplayerMod
             if (roleBefore == NetRole.Host)
             {
                 try { NetRef?.SendKick(); } catch { }
+            }
+
+            if (roleBefore == NetRole.Client)
+            {
+                RestoreClientSave();
             }
 
             try
@@ -502,6 +526,7 @@ namespace DeadCellsMultiplayerMod
             {
                 _waitingForHost = false;
                 SendCachedDataToRemote();
+                SendCachedGeneratePayload();
 
                 if (_menuSelection == NetRole.Host)
                 {
@@ -534,6 +559,8 @@ namespace DeadCellsMultiplayerMod
             ClearNetworkCaches();
             _inHostStatusMenu = false;
             _inClientWaitingMenu = false;
+            _localReady = false;
+            _genArrived = false;
         }
 
         private static void SendCachedDataToRemote()
@@ -576,12 +603,135 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        private static bool AllPlayersReady()
+        {
+            if (!_localReady) return false;
+            if (_playersDisplay.Count == 0) return true;
+            return _playersDisplay.All(p => p.Ready);
+        }
+
+        private static string GetBackupPath()
+        {
+            var configDir = Path.GetDirectoryName(GetConfigPath()) ?? Environment.CurrentDirectory;
+            return Path.Combine(configDir, "client_backup.json");
+        }
+
+        private static void BackupClientSave()
+        {
+            try
+            {
+                if (_role != NetRole.None && _role != NetRole.Client) return;
+
+                var gd = GetGameDataInstance();
+                if (gd == null) return;
+
+                var sync = BuildGameDataSync(gd);
+                _clientSaveBackup = sync;
+
+                try
+                {
+                    var json = JsonConvert.SerializeObject(sync);
+                    File.WriteAllText(GetBackupPath(), json);
+                }
+                catch { }
+
+                _log?.Information("[NetMod] Client save backed up before multiplayer connect");
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to backup client save: {Message}", ex.Message);
+            }
+        }
+
+        private static void RestoreClientSave()
+        {
+            try
+            {
+                GameDataSync? sync = _clientSaveBackup;
+                if (sync == null)
+                {
+                    try
+                    {
+                        var path = GetBackupPath();
+                        if (File.Exists(path))
+                        {
+                            var json = File.ReadAllText(path);
+                            sync = JsonConvert.DeserializeObject<GameDataSync>(json);
+                        }
+                    }
+                    catch { }
+                }
+
+                if (sync == null) return;
+
+                var gd = GetGameDataInstance();
+                if (gd != null)
+                {
+                    ApplyGameDataSyncToInstance(gd, sync, null);
+                    _log?.Information("[NetMod] Client save restored after multiplayer");
+                }
+
+                _clientSaveBackup = null;
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to restore client save: {Message}", ex.Message);
+            }
+        }
+
         private static void ClearNetworkCaches()
         {
             CacheLevelDescSync(null);
             CacheGameDataSync(null);
             _latestResolvedRunParams = null;
             _lastAppliedSync = null;
+            _genArrived = false;
+            _cachedRawLevelDesc = null;
+            _clientSaveBackup = null;
+        }
+
+        public static void ReceiveGeneratePayload(string json)
+        {
+            try
+            {
+                var payload = JsonConvert.DeserializeAnonymousType(json, new
+                {
+                    levelDesc = new LevelDescSync(),
+                    runParams = new RunParams(),
+                    rawDesc = string.Empty
+                });
+                if (payload == null) return;
+
+                if (payload.levelDesc != null && !IsChallengeLevel(payload.levelDesc.LevelId))
+                {
+                    CacheLevelDescSync(payload.levelDesc);
+                    _log?.Information("[NetMod] Client cached LevelDescSync from generate payload");
+                }
+
+                if (payload.runParams != null)
+                {
+                    UpdateResolvedRunParams(payload.runParams, fromNetwork: true);
+                    _log?.Information("[NetMod] Client cached RunParams from generate payload");
+                }
+
+                if (!string.IsNullOrWhiteSpace(payload.rawDesc))
+                {
+                    _log?.Information("[NetMod] Client received raw LevelDesc: {Json}", payload.rawDesc);
+                }
+
+                lock (Sync)
+                {
+                    if (_role == NetRole.Client && !_inActualRun)
+                    {
+                        _genArrived = true;
+                        _pendingAutoStart = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to receive generate payload: {Message}", ex.Message);
+            }
         }
 
         private sealed class MenuConfig
@@ -589,6 +739,15 @@ namespace DeadCellsMultiplayerMod
             public string user { get; set; } = "guest";
             public string last_ip { get; set; } = "127.0.0.1";
             public int last_port { get; set; } = 1234;
+            public string player_id { get; set; } = Guid.NewGuid().ToString("N");
+        }
+
+        private sealed class PlayerInfo
+        {
+            public string Id { get; set; } = Guid.NewGuid().ToString("N");
+            public string Name { get; set; } = "guest";
+            public bool Ready { get; set; }
+            public bool IsHost { get; set; }
         }
 
         private static void LoadConfig()
@@ -605,6 +764,7 @@ namespace DeadCellsMultiplayerMod
                         _username = string.IsNullOrWhiteSpace(cfg.user) ? GetDefaultUsername() : cfg.user.Trim();
                         _mpIp = string.IsNullOrWhiteSpace(cfg.last_ip) ? "127.0.0.1" : cfg.last_ip.Trim();
                         _mpPort = cfg.last_port <= 0 || cfg.last_port > 65535 ? 1234 : cfg.last_port;
+                        _playerId = string.IsNullOrWhiteSpace(cfg.player_id) ? Guid.NewGuid().ToString("N") : cfg.player_id.Trim();
                         return;
                     }
                 }
@@ -617,6 +777,7 @@ namespace DeadCellsMultiplayerMod
             _username = GetDefaultUsername();
             _mpIp = "127.0.0.1";
             _mpPort = 1234;
+            _playerId = Guid.NewGuid().ToString("N");
             SaveConfig();
         }
 
@@ -630,7 +791,8 @@ namespace DeadCellsMultiplayerMod
                 {
                     user = _username,
                     last_ip = _mpIp,
-                    last_port = _mpPort
+                    last_port = _mpPort,
+                    player_id = _playerId
                 };
                 var json = JsonConvert.SerializeObject(cfg, Formatting.Indented);
                 File.WriteAllText(path, json);

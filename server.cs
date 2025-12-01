@@ -262,6 +262,14 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("GEN|"))
+                    {
+                        var payload = line["GEN|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        GameMenu.ReceiveGeneratePayload(payload);
+                        continue;
+                    }
+
                     if (line.StartsWith("KICK"))
                     {
                         GameMenu.NotifyRemoteDisconnected(_role);
@@ -324,7 +332,9 @@ public sealed class NetNode : IDisposable
     public void TickSend(int cx, int cy, double xr, double yr)
     {
         if (_stream == null || _client == null || !_client.Connected) return;
-        var line = $"{cx}|{cy}|{xr}|{yr}\n";
+        var line = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{cx}|{cy}|{xr}|{yr}\n");
         _ = SendLineSafe(line);
     }
 
@@ -374,6 +384,18 @@ public sealed class NetNode : IDisposable
 
         SendRaw("GDATA|" + json);
         _log.Information("[NetNode] Sent GameData payload ({Length} bytes)", json.Length);
+    }
+
+    public void SendGeneratePayload(string json)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending generate payload: no connected client");
+            return;
+        }
+
+        SendRaw("GEN|" + json);
+        _log.Information("[NetNode] Sent Generate payload ({Length} bytes)", json.Length);
     }
 
     public void SendKick()
