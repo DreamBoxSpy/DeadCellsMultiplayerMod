@@ -1,6 +1,8 @@
 using System;
 using System.Net;
 using System.Reflection;
+using System.IO;
+using System.Runtime.InteropServices;
 using dc.pr;
 using dc.ui;
 using HaxeProxy.Runtime;
@@ -24,6 +26,15 @@ namespace DeadCellsMultiplayerMod
         private static bool _mainMenuButtonAdded;
         private static bool _suppressAutoButton;
         private static bool _worldExitHandled;
+        private static string _username = "guest";
+        private static bool _inHostStatusMenu;
+        private static bool _inClientWaitingMenu;
+        private static bool _prevEsc;
+        private static double _escCooldown;
+        private const double EscCooldown = 0.2;
+        private const int VK_ESCAPE = 0x1B;
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
 
         private static void InitializeMenuUiHooks()
         {
@@ -31,6 +42,7 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
+                LoadConfig();
                 Hook_TitleScreen.addMenu += AddMenuHook;
                 Hook_TitleScreen.mainMenu += MainMenuHook;
                 Hook_Game.onDispose += GameDisposeHook;
@@ -60,7 +72,10 @@ namespace DeadCellsMultiplayerMod
             }
 
             if (!shouldStart)
+            {
+                HandleEsc(dt);
                 return;
+            }
 
             var ts = GetTitleScreen();
             if (ts != null)
@@ -88,6 +103,8 @@ namespace DeadCellsMultiplayerMod
                     _pendingAutoStart = true;
                 }
             }
+
+            HandleEsc(dt);
         }
 
         public static void NotifyGameDataReceived()
@@ -170,6 +187,8 @@ namespace DeadCellsMultiplayerMod
                 AddMenuButton(screen, "Back", () => screen.mainMenu(), "Return to main menu");
                 RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
                 RemoveDuplicatesKeepFirst(screen, "Host game", "Join game");
+                _inHostStatusMenu = false;
+                _inClientWaitingMenu = false;
             }
             catch (Exception ex)
             {
@@ -196,11 +215,14 @@ namespace DeadCellsMultiplayerMod
                 SetIsMainMenu(screen, false);
                 screen.clearMenu();
 
+                AddMenuButton(screen, $"Username: {_username}", () => EditUsername(screen), "Edit display name");
+
                 AddMenuButton(screen, $"IP: {_mpIp}", () =>
                 {
                     OpenTextInput(screen, "IP address", _mpIp, value =>
                     {
                         _mpIp = string.IsNullOrWhiteSpace(value) ? "127.0.0.1" : value;
+                        SaveConfig();
                         ShowConnectionMenu(screen, role);
                     });
                 }, "Edit IP");
@@ -212,6 +234,7 @@ namespace DeadCellsMultiplayerMod
                         if (!int.TryParse(value, out var parsed) || parsed <= 0 || parsed > 65535)
                             parsed = 1234;
                         _mpPort = parsed;
+                        SaveConfig();
                         ShowConnectionMenu(screen, role);
                     });
                 }, "Edit port");
@@ -237,6 +260,12 @@ namespace DeadCellsMultiplayerMod
                 AddMenuButton(screen, "Back", () => ShowMultiplayerMenu(screen), "Back to multiplayer menu");
                 RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
                 RemoveDuplicatesKeepFirst(screen, "Host game", "Join game", "About Core Modding");
+                _inHostStatusMenu = false;
+                _inClientWaitingMenu = false;
+                if (role == NetRole.Host)
+                {
+                    SetRole(NetRole.None);
+                }
             }
             catch (Exception ex)
             {
@@ -402,10 +431,17 @@ namespace DeadCellsMultiplayerMod
                 AddInfoLine(screen, $"Players: {BuildPlayerList(NetRole.Host)}", infoColor: 0xA0C0FF);
 
                 AddMenuButton(screen, "Play", () => StartHostRun(screen), "Launch game");
-                AddMenuButton(screen, "Back", () => ShowConnectionMenu(screen, NetRole.Host), "Back to host setup");
+                AddMenuButton(screen, "Back", () =>
+                {
+                    SetRole(NetRole.None);
+                    _menuSelection = NetRole.None;
+                    ShowMultiplayerMenu(screen);
+                }, "Back to host setup");
 
                 RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
                 RemoveDuplicatesKeepFirst(screen, "Play", "Back");
+                _inHostStatusMenu = true;
+                _inClientWaitingMenu = false;
             }
             catch (Exception ex)
             {
@@ -433,6 +469,8 @@ namespace DeadCellsMultiplayerMod
 
                 RemoveMenuItems(screen, "About Core Modding", "Play multiplayer");
                 RemoveDuplicatesKeepFirst(screen, "Disconnect");
+                _inClientWaitingMenu = true;
+                _inHostStatusMenu = false;
             }
             catch (Exception ex)
             {
@@ -454,7 +492,20 @@ namespace DeadCellsMultiplayerMod
             catch { }
             _waitingForHost = false;
             _menuSelection = NetRole.None;
+            _inHostStatusMenu = false;
+            _inClientWaitingMenu = false;
             screen.mainMenu();
+        }
+
+        private static void EditUsername(TitleScreen screen)
+        {
+            OpenTextInput(screen, "Username", _username, value =>
+            {
+                var cleaned = string.IsNullOrWhiteSpace(value) ? "guest" : value.Trim();
+                _username = cleaned;
+                SaveConfig();
+                ShowConnectionMenu(screen, _menuSelection == NetRole.None ? NetRole.Host : _menuSelection);
+            });
         }
 
         public static void NotifyRemoteConnected(NetRole role)
@@ -493,6 +544,8 @@ namespace DeadCellsMultiplayerMod
             _waitingForHost = false;
             _menuSelection = NetRole.None;
             ClearNetworkCaches();
+            _inHostStatusMenu = false;
+            _inClientWaitingMenu = false;
         }
 
         private static void SendCachedDataToRemote()
@@ -541,6 +594,83 @@ namespace DeadCellsMultiplayerMod
             CacheGameDataSync(null);
             _latestResolvedRunParams = null;
             _lastAppliedSync = null;
+        }
+
+        private sealed class MenuConfig
+        {
+            public string user { get; set; } = "guest";
+            public string last_ip { get; set; } = "127.0.0.1";
+            public int last_port { get; set; } = 1234;
+        }
+
+        private static void LoadConfig()
+        {
+            try
+            {
+                var path = GetConfigPath();
+                if (File.Exists(path))
+                {
+                    var json = File.ReadAllText(path);
+                    var cfg = JsonConvert.DeserializeObject<MenuConfig>(json);
+                    if (cfg != null)
+                    {
+                        _username = string.IsNullOrWhiteSpace(cfg.user) ? GetDefaultUsername() : cfg.user.Trim();
+                        _mpIp = string.IsNullOrWhiteSpace(cfg.last_ip) ? "127.0.0.1" : cfg.last_ip.Trim();
+                        _mpPort = cfg.last_port <= 0 || cfg.last_port > 65535 ? 1234 : cfg.last_port;
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to load config: {Message}", ex.Message);
+            }
+
+            _username = GetDefaultUsername();
+            _mpIp = "127.0.0.1";
+            _mpPort = 1234;
+            SaveConfig();
+        }
+
+        private static void SaveConfig()
+        {
+            try
+            {
+                var path = GetConfigPath();
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                var cfg = new MenuConfig
+                {
+                    user = _username,
+                    last_ip = _mpIp,
+                    last_port = _mpPort
+                };
+                var json = JsonConvert.SerializeObject(cfg, Formatting.Indented);
+                File.WriteAllText(path, json);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warning("[NetMod] Failed to save config: {Message}", ex.Message);
+            }
+        }
+
+        private static string GetConfigPath()
+        {
+            var baseDir = AppContext.BaseDirectory;
+            var root = Directory.GetParent(baseDir)?.Parent?.Parent?.Parent?.FullName ?? baseDir;
+            var dir = Path.Combine(root, "mods", "DeadCellsMultiplayerMod");
+            return Path.Combine(dir, "config.json");
+        }
+
+        private static string GetDefaultUsername()
+        {
+            try
+            {
+                var env = Environment.UserName;
+                if (!string.IsNullOrWhiteSpace(env))
+                    return env;
+            }
+            catch { }
+            return "guest";
         }
 
         private static string BuildStatus(NetRole role)
@@ -855,6 +985,42 @@ namespace DeadCellsMultiplayerMod
             {
                 _log?.Warning("[NetMod] Failed to clean duplicate menu items: {Message}", ex.Message);
             }
+        }
+
+        private static void HandleEsc(double dt)
+        {
+            _escCooldown -= dt;
+            if (_escCooldown < 0) _escCooldown = 0;
+
+            bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+            bool escEdge = escNow && !_prevEsc && _escCooldown <= 0;
+            _prevEsc = escNow;
+
+            if (!escEdge) return;
+            _escCooldown = EscCooldown;
+
+            var ts = GetTitleScreen();
+            if (ts == null) return;
+
+            if (_inClientWaitingMenu)
+            {
+                DisconnectFromMenu(ts);
+                return;
+            }
+
+            if (_inHostStatusMenu)
+            {
+                ShowConnectionMenu(ts, NetRole.Host);
+                return;
+            }
+
+            if (_menuSelection != NetRole.None)
+            {
+                ShowMultiplayerMenu(ts);
+                return;
+            }
+
+            try { ts.mainMenu(); } catch { }
         }
 
         private static void StoreTitleScreen(TitleScreen ts)

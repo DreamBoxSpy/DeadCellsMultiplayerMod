@@ -8,7 +8,6 @@ using Newtonsoft.Json.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
-using System.Threading;
 using Hashlink.Virtuals;
 using Hashlink.Proxy.DynamicAccess;
 using HaxeProxy.Runtime;
@@ -17,12 +16,8 @@ using MonoMod.RuntimeDetour;
 using Serilog;
 using dc;
 using dc.hl.types;
-using dc.libs;
 using dc.level;
-using dc.pr;
-using dc.tool;
 using Serializer = dc.hxbit.Serializer;
-using ModCore.Modules;
 using Hook_GameData = dc.tool.Hook_GameData;
 
 

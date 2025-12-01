@@ -96,15 +96,6 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static byte[] CopyBuffer(BytesBuffer buffer)
-        {
-            if (buffer.pos <= 0) return Array.Empty<byte>();
-
-            var managed = new byte[buffer.pos];
-            Marshal.Copy(buffer.b, managed, 0, buffer.pos);
-            return managed;
-        }
-
         private static object? CreateContext(Type? ctxType, Serializer serializer)
         {
             if (ctxType == null) return null;

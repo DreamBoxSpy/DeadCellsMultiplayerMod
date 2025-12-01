@@ -3,15 +3,11 @@ using System.Linq;
 using System.Reflection;
 using System.Linq.Expressions;
 using Hashlink.Proxy.DynamicAccess;
-using Hashlink.Proxy.Objects;
 using System.Runtime.CompilerServices;
 using Serilog;
 
 namespace DeadCellsMultiplayerMod
 {
-    /// <summary>
-    /// Simple ghost spawner that instantiates en.Hero with a custom heroType string and mirrors position updates.
-    /// </summary>
     public sealed class HeroGhost
     {
         private readonly ILogger _log;
@@ -29,24 +25,12 @@ namespace DeadCellsMultiplayerMod
         private bool _registeredInLevel;
         private DateTime _lastCoordLog = DateTime.MinValue;
         private static readonly HashSet<string> LoggedLevelMembers = new();
-        private static readonly HashSet<string> LoggedSpriteTypes = new();
         private bool _spriteOffsetApplied;
-
-        private static readonly string[] DefaultHeroTypes =
-        {
-            // Prefer en.* variants (user request), then dc.* fallbacks.
-            // "en.Hero",
-            // "dc.en.Hero",
-            "en.Homunculus",
-            // "en.mob.BootlegHomunculus",
-            "dc.en.Homunculus",
-            // "dc.en.mob.BootlegHomunculus"
-        };
 
         public HeroGhost(ILogger log) => _log = log;
 
         public bool IsSpawned => _ghost != null;
-        public bool HasEntityType => true; // compatibility with CompanionController
+        public bool HasEntityType => true;
 
         private static void LogCatch(Exception ex, [CallerMemberName] string? member = null)
         {
@@ -61,7 +45,7 @@ namespace DeadCellsMultiplayerMod
 
         public void FindSuitableEntityType(object? heroRef)
         {
-            // no-op: we always use Hero + forced/custom type string
+            // Compatibility shim: we already force a neutral entity type for the ghost.
         }
 
         public bool Spawn(object heroRef, object? levelHint, object? gameHint, int spawnCx, int spawnCy)
@@ -183,118 +167,20 @@ namespace DeadCellsMultiplayerMod
         {
             const BindingFlags AllFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
 
-            try
-            {
-                _setPosCase = ghost.GetType().GetMethod(
-                    "setPosCase",
-                    AllFlags,
-                    binder: null,
-                    types: new[] { typeof(int), typeof(int), typeof(double?), typeof(double?) },
-                    modifiers: null);
+            _setPosCase = ghost.GetType().GetMethod(
+                "setPosCase",
+                AllFlags,
+                binder: null,
+                types: new[] { typeof(int), typeof(int), typeof(double?), typeof(double?) },
+                modifiers: null);
 
-                if (_setPosCase != null)
-                {
-                    _setPosCase.Invoke(ghost, new object?[] { cx, cy, xr, yr });
-                    TryRefreshSpritePos(ghost);
-                    return true;
-                }
-            }
-            catch (Exception ex)
+            if (_setPosCase != null)
             {
-                if (!suppressWarnings && !_teleportWarningLogged)
-                {
-                    _log.Warning("[HeroGhost] setPosCase failed: {Message}", ex.Message);
-                    _teleportWarningLogged = true;
-                }
+                _setPosCase.Invoke(ghost, new object?[] { cx, cy, xr, yr });
+                TryRefreshSpritePos(ghost);
+                return true;
             }
-
-            try
-            {
-                _setPos ??= ghost.GetType().GetMethod(
-                    "set_pos",
-                    AllFlags,
-                    binder: null,
-                    types: new[] { typeof(int), typeof(int), typeof(double), typeof(double) },
-                    modifiers: null);
-
-                if (_setPos != null)
-                {
-                    _setPos.Invoke(ghost, new object?[] { cx, cy, xr, yr });
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!suppressWarnings && !_teleportWarningLogged)
-                {
-                    _log.Warning("[HeroGhost] set_pos failed: {Message}", ex.Message);
-                    _teleportWarningLogged = true;
-                }
-            }
-
-            try
-            {
-                _safeTpTo ??= ghost.GetType().GetMethod(
-                    "safeTpTo",
-                    AllFlags,
-                    binder: null,
-                    types: new[] { typeof(int), typeof(int) },
-                    modifiers: null)
-                    ?? ghost.GetType().GetMethod(
-                        "safeTpTo",
-                        AllFlags,
-                        binder: null,
-                        types: new[] { typeof(int), typeof(int), typeof(double), typeof(double) },
-                        modifiers: null);
-
-                if (_safeTpTo != null)
-                {
-                    var ps = _safeTpTo.GetParameters();
-                    if (ps.Length == 2)
-                        _safeTpTo.Invoke(ghost, new object?[] { cx, cy });
-                    else
-                        _safeTpTo.Invoke(ghost, new object?[] { cx, cy, xr, yr });
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!suppressWarnings && !_teleportWarningLogged)
-                {
-                    _log.Warning("[HeroGhost] safeTpTo failed: {Message}", ex.Message);
-                    _teleportWarningLogged = true;
-                }
-            }
-
-            try
-            {
-                // Try specific setters if present
-                var t = ghost.GetType();
-                var setCx = t.GetMethod("set_cx", AllFlags, null, new[] { typeof(int) }, null);
-                var setCy = t.GetMethod("set_cy", AllFlags, null, new[] { typeof(int) }, null);
-                var setXr = t.GetMethod("set_xr", AllFlags, null, new[] { typeof(double) }, null);
-                var setYr = t.GetMethod("set_yr", AllFlags, null, new[] { typeof(double) }, null);
-                if (setCx != null) try { setCx.Invoke(ghost, new object?[] { cx }); } catch (Exception ex) { LogCatch(ex); }
-                if (setCy != null) try { setCy.Invoke(ghost, new object?[] { cy }); } catch (Exception ex) { LogCatch(ex); }
-                if (setXr != null) try { setXr.Invoke(ghost, new object?[] { xr }); } catch (Exception ex) { LogCatch(ex); }
-                if (setYr != null) try { setYr.Invoke(ghost, new object?[] { yr }); } catch (Exception ex) { LogCatch(ex); }
-
-                // Try setPosPixel(double,double)
-                var setPosPixel = t.GetMethod("setPosPixel", AllFlags, null, new[] { typeof(double), typeof(double) }, null);
-                if (setPosPixel != null)
-                {
-                    setPosPixel.Invoke(ghost, new object?[] { (double)cx, (double)cy });
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!suppressWarnings && !_teleportWarningLogged)
-                {
-                    _log.Warning("[HeroGhost] set_c* fallback failed: {Message}", ex.Message);
-                    _teleportWarningLogged = true;
-                }
-            }
+            
 
             try
             {
@@ -325,38 +211,6 @@ namespace DeadCellsMultiplayerMod
             {
                 var t = ghost.GetType();
 
-                // ---------- set_easeSpritePos(bool) ----------
-                try
-                {
-                    var setEase = t.GetMethods(Flags)
-                        .Where(m => m.Name == "set_easeSpritePos")
-                        .Where(m =>
-                        {
-                            var ps = m.GetParameters();
-                            return ps.Length == 1 && ps[0].ParameterType == typeof(bool);
-                        })
-                        .FirstOrDefault();
-
-                    if (setEase != null)
-                    {
-                        setEase.Invoke(ghost, new object?[] { false });
-                    }
-                    else
-                    {
-                        var easeField = t.GetField("easeSpritePos", Flags);
-                        if (easeField != null && easeField.FieldType == typeof(bool))
-                            easeField.SetValue(ghost, false);
-
-                        var easeProp = t.GetProperty("easeSpritePos", Flags);
-                        if (easeProp?.CanWrite == true && easeProp.PropertyType == typeof(bool))
-                            easeProp.SetValue(ghost, false);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.Warning("[HeroGhost] set_easeSpritePos failed: {Message}", ex.Message);
-                }
-
                 // ---------- updateLastSprPos() ----------
                 try
                 {
@@ -379,92 +233,6 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-
-        private void ApplySpriteYOffset(object sprite, double offset)
-        {
-            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-            try
-            {
-                // direct properties/fields that look like offset/pivot
-                var candidates = new[] { "yOffset", "offsetY", "offY", "yOff", "pivotY", "anchorY", "originY" };
-                foreach (var name in candidates)
-                {
-                    var prop = sprite.GetType().GetProperty(name, Flags);
-                    if (prop?.CanWrite == true && prop.PropertyType == typeof(double))
-                    {
-                        try { prop.SetValue(sprite, offset); return; } catch { }
-                    }
-                    var field = sprite.GetType().GetField(name, Flags);
-                    if (field != null && field.FieldType == typeof(double))
-                    {
-                        try { field.SetValue(sprite, offset); return; } catch { }
-                    }
-                }
-
-                // setPivot(x,y) fallback
-                var setPivot = sprite.GetType().GetMethod("setPivot", Flags, binder: null, types: new[] { typeof(double), typeof(double) }, modifiers: null);
-                if (setPivot != null)
-                {
-                    try { setPivot.Invoke(sprite, new object?[] { 0.0, offset }); return; } catch { }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogCatch(ex);
-            }
-        }
-
-        private void TryInvokeSpritePosMethod(object sprite, object? gx, object? gy, double addY, BindingFlags flags)
-        {
-            try
-            {
-                double xVal, yVal;
-                try { xVal = Convert.ToDouble(gx); } catch { return; }
-                try { yVal = Convert.ToDouble(gy) + addY; } catch { return; }
-
-                var methods = sprite.GetType().GetMethods(flags)
-                    .Where(m =>
-                    {
-                        var name = m.Name.ToLowerInvariant();
-                        if (!(name.Contains("setpos") || name.Contains("setposition"))) return false;
-                        var ps = m.GetParameters();
-                        return ps.Length == 2 &&
-                               ps[0].ParameterType == typeof(double) &&
-                               ps[1].ParameterType == typeof(double);
-                    }).ToList();
-
-                foreach (var m in methods)
-                {
-                    try { m.Invoke(sprite, new object?[] { xVal, yVal }); return; } catch { }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogCatch(ex);
-            }
-        }
-
-        private void LogSpriteIntrospectionOnce(object sprite, BindingFlags flags)
-        {
-            var key = sprite.GetType().FullName ?? sprite.GetType().Name;
-            if (!LoggedSpriteTypes.Add(key)) return;
-
-            try
-            {
-                var candidates = sprite.GetType().GetMethods(flags)
-                    .Where(m => m.Name.IndexOf("offset", StringComparison.OrdinalIgnoreCase) >= 0
-                             || m.Name.IndexOf("pivot", StringComparison.OrdinalIgnoreCase) >= 0
-                             || m.Name.IndexOf("pos", StringComparison.OrdinalIgnoreCase) >= 0)
-                    .Select(m => m.Name)
-                    .Distinct()
-                    .ToArray();
-                _log.Information("[HeroGhost] Sprite type {Type} methods: {Methods}", key, string.Join(",", candidates));
-            }
-            catch (Exception ex)
-            {
-                LogCatch(ex);
-            }
-        }
 
         public void Reset()
         {
@@ -591,25 +359,13 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private bool TrySpawnViaLevelFactory(object levelObj, string heroTypeString, int cx, int cy, double xr, double yr, out object? ghost)
-        {
-            ghost = null;
-            return false; // disabled due to missing overloads
-        }
-
         private static Type? FindEntityClass(IEnumerable<Assembly> assemblies)
         {
             string[] candidates =
             {
-                "en.Homunculus",
-                "dc.en.Homunculus",
-                "dc.en.mob.BootlegHomunculus",
-                "en.mob.BootlegHomunculus",
-                "en.Hero",
-                "dc.en.Hero",
-                "dc.en.hero.Beheaded",
                 "dc.en.Entity",
-                "dc.Entity"
+                "dc.Entity",
+                "en.Entity"
             };
 
             foreach (var asm in assemblies)
@@ -635,7 +391,6 @@ namespace DeadCellsMultiplayerMod
             if (!visited.Add(heroClass))
                 return null;
 
-            // Try common constructors next (prefer fully initialized objects)
             try
             {
                 var ctors = heroClass.GetConstructors(AllFlags);
@@ -752,41 +507,6 @@ namespace DeadCellsMultiplayerMod
             if (hlGhost != null)
                 return hlGhost;
 
-            // Last-ditch: uninitialized instance with injected context (riskier, but better than failing)
-            try
-            {
-                var inst = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(heroClass);
-                const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-
-                void SetFieldOrProp(string name, object? value)
-                {
-                    if (value == null) return;
-                    try
-                    {
-                        var f = heroClass.GetField(name, Flags);
-                        if (f != null && f.FieldType.IsInstanceOfType(value)) { f.SetValue(inst, value); return; }
-                        var p = heroClass.GetProperty(name, Flags);
-                        if (p?.CanWrite == true && p.PropertyType.IsInstanceOfType(value)) { p.SetValue(inst, value); }
-                    }
-                    catch (Exception ex) { LogCatch(ex); }
-                }
-
-                SetFieldOrProp("game", gameObj);
-                SetFieldOrProp("_game", gameObj);
-                SetFieldOrProp("level", levelObj);
-                SetFieldOrProp("_level", levelObj);
-                SetFieldOrProp("heroType", heroTypeString);
-                SetFieldOrProp("_heroType", heroTypeString);
-                SetFieldOrProp("type", heroTypeString);
-                SetFieldOrProp("_type", heroTypeString);
-                SetFieldOrProp("alive", true);
-                SetFieldOrProp("_alive", true);
-                return inst;
-            }
-            catch (Exception ex)
-            {
-                _log.Warning("[HeroGhost] Uninitialized fallback failed: {Message}", ex.Message);
-            }
 
             // Fallback to alternate entity classes if the current one failed
             var fallbackNames = new[]
@@ -817,31 +537,6 @@ namespace DeadCellsMultiplayerMod
             return null;
         }
 
-        private static string? ExtractHeroType(object heroRef)
-        {
-            try
-            {
-                dynamic h = DynamicAccessUtils.AsDynamic(heroRef);
-                try
-                {
-                    var t = h.type;
-                    if (t != null)
-                        return t as string ?? t.ToString();
-                }
-                catch (Exception ex) { LogCatch(ex); }
-
-                try
-                {
-                    var ht = h.heroType;
-                    if (ht != null)
-                        return ht as string ?? ht.ToString();
-                }
-                catch (Exception ex) { LogCatch(ex); }
-            }
-            catch (Exception ex) { LogCatch(ex); }
-            try { return heroRef.GetType().FullName; } catch (Exception ex) { LogCatch(ex); }
-            return null;
-        }
 
         private static (int cx, int cy, double xr, double yr) ExtractCoordsFromHero(object heroRef)
         {
@@ -885,15 +580,6 @@ namespace DeadCellsMultiplayerMod
             {
                 LogCatch(ex);
                 return false;
-            }
-        }
-
-        private static void TrySetField(object target, Type type, string name, object value, BindingFlags flags)
-        {
-            var f = type.GetField(name, flags);
-            if (f != null && f.FieldType.IsAssignableFrom(value.GetType()))
-            {
-                try { f.SetValue(target, value); } catch (Exception ex) { LogCatch(ex); }
             }
         }
 
@@ -1081,16 +767,6 @@ namespace DeadCellsMultiplayerMod
             return code is TypeCode.Int32 or TypeCode.Double or TypeCode.Single or TypeCode.Int64 or TypeCode.Int16;
         }
 
-        public bool TryGetCoords(out int cx, out int cy, out double xr, out double yr)
-        {
-            if (_ghost != null && ExtractCoordsFromObject(_ghost, out cx, out cy, out xr, out yr))
-                return true;
-            cx = cy = -1;
-            xr = 0.5;
-            yr = 1;
-            return false;
-        }
-
         public bool TryLogCoords(TimeSpan? minInterval = null)
         {
             var ghost = _ghost;
@@ -1236,38 +912,6 @@ namespace DeadCellsMultiplayerMod
             return _registeredInLevel;
         }
 
-        private bool TryInvokeDynamic(object target, string methodName, object arg)
-        {
-            if (_registeredInLevel) return true;
-            try
-            {
-                dynamic dyn = DynamicAccessUtils.AsDynamic(target);
-                switch (methodName)
-                {
-                    case "registerEntity":
-                        dyn.registerEntity(arg);
-                        break;
-                    case "addEntity":
-                        dyn.addEntity(arg);
-                        break;
-                    case "add":
-                        dyn.add(arg);
-                        break;
-                    default:
-                        return false;
-                }
-
-                _registeredInLevel = true;
-                _log.Information("[HeroGhost] Ghost registered via dynamic {Method}", methodName);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _log.Warning("[HeroGhost] Dynamic {Method} failed: {Message} (inner={Inner}) stack={Stack}", methodName, ex.Message, ex.InnerException?.Message ?? "none", ex.ToString());
-                LogLevelIntrospection(target);
-                return false;
-            }
-        }
 
         private bool TryInvokeOne(object target, string methodName, object arg, BindingFlags flags)
         {
@@ -1327,72 +971,6 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private void TryFillNullUpdateMembers(object ghost)
-        {
-            try
-            {
-                const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-                var t = ghost.GetType();
-                var noopAction = (Action)(() => { });
-                var noopActionDouble = (Action<double>)(_ => { });
-
-                foreach (var f in t.GetFields(Flags))
-                {
-                    if (!f.Name.Contains("update", StringComparison.OrdinalIgnoreCase)) continue;
-                    var current = f.GetValue(ghost);
-                    if (current != null) continue;
-                    try
-                    {
-                        if (typeof(Delegate).IsAssignableFrom(f.FieldType))
-                        {
-                            f.SetValue(ghost, CreateNoOpDelegate(f.FieldType));
-                            continue;
-                        }
-                        if (f.FieldType == typeof(Action)) { f.SetValue(ghost, noopAction); continue; }
-                        if (f.FieldType == typeof(Action<double>)) { f.SetValue(ghost, noopActionDouble); continue; }
-                        if (f.FieldType.IsClass || f.FieldType.IsInterface)
-                        {
-                            // best-effort assign a no-op Action<double> if compatible with object
-                            if (f.FieldType.IsAssignableFrom(typeof(Action<double>)))
-                            {
-                                f.SetValue(ghost, noopActionDouble);
-                                continue;
-                            }
-                        }
-                    }
-                    catch (Exception ex) { LogCatch(ex); }
-                }
-
-                foreach (var p in t.GetProperties(Flags))
-                {
-                    if (!p.CanWrite) continue;
-                    if (!p.Name.Contains("update", StringComparison.OrdinalIgnoreCase)) continue;
-                    object? current = null;
-                    try { current = p.GetValue(ghost); } catch (Exception ex) { LogCatch(ex); }
-                    if (current != null) continue;
-                    try
-                    {
-                        if (typeof(Delegate).IsAssignableFrom(p.PropertyType))
-                        {
-                            p.SetValue(ghost, CreateNoOpDelegate(p.PropertyType));
-                            continue;
-                        }
-                        if (p.PropertyType == typeof(Action)) { p.SetValue(ghost, noopAction); continue; }
-                        if (p.PropertyType == typeof(Action<double>)) { p.SetValue(ghost, noopActionDouble); continue; }
-                        if (p.PropertyType.IsClass || p.PropertyType.IsInterface)
-                        {
-                            if (p.PropertyType.IsAssignableFrom(typeof(Action<double>)))
-                            {
-                                p.SetValue(ghost, noopActionDouble);
-                                continue;
-                            }
-                        }
-                    }
-                    catch (Exception ex) { LogCatch(ex); }
-                }
-            }
-            catch (Exception ex) { LogCatch(ex); }
-        }
 
         private void TryInvokeLifecycle(object ghost)
         {
@@ -1613,178 +1191,6 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-        private void TryCloneSprite(object heroRef, object ghost)
-        {
-            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-            try
-            {
-                object? heroSprite = null;
-                try { dynamic h = DynamicAccessUtils.AsDynamic(heroRef); heroSprite = (object?)h.spr; } catch (Exception ex) { LogCatch(ex); }
-                heroSprite ??= TryGetFieldOrProp(heroRef, "sprite", Flags) ?? TryGetFieldOrProp(heroRef, "spr", Flags);
-                if (heroSprite == null)
-                {
-                    _log.Warning("[HeroGhost] Clone sprite failed: hero sprite not found");
-                    return;
-                }
-
-                // If ghost already has a sprite, skip cloning
-                var ghostSprite = TryGetFieldOrProp(ghost, "sprite", Flags) ?? TryGetFieldOrProp(ghost, "spr", Flags);
-                if (ghostSprite != null) return;
-
-                var lib = TryGetFieldOrProp(heroSprite, "lib", Flags);
-                if (lib == null)
-                {
-                    _log.Warning("[HeroGhost] Clone sprite failed: hero sprite lib not found");
-                    return;
-                }
-
-                var groupObj = TryGetFieldOrProp(heroSprite, "groupName", Flags)
-                               ?? TryGetFieldOrProp(heroSprite, "group", Flags)
-                               ?? TryGetFieldOrProp(heroRef, "name", Flags)
-                               ?? "hero";
-                var parentObj = TryGetFieldOrProp(heroSprite, "parent", Flags);
-                var frameVal = TryGetFieldOrProp(heroSprite, "frame", Flags);
-                int frameIdx = 0;
-                try { if (frameVal is int fi) frameIdx = fi; } catch (Exception ex) { LogCatch(ex); }
-
-                var spriteType = heroSprite.GetType();
-
-                bool IsSpriteLib(Type t) => t.Name.Contains("SpriteLib", StringComparison.OrdinalIgnoreCase);
-                bool IsParentLike(Type t) => t.Name.Contains("h2d.Object", StringComparison.OrdinalIgnoreCase) || t.Name.Contains("HObject", StringComparison.OrdinalIgnoreCase);
-                bool IsStringLike(Type t) => t == typeof(string) || t.Name.Contains("String", StringComparison.OrdinalIgnoreCase);
-
-                object? ConvertGroup(Type targetType)
-                {
-                    if (groupObj != null && targetType.IsInstanceOfType(groupObj)) return groupObj;
-                    var strVal = groupObj?.ToString() ?? "hero";
-                    if (targetType == typeof(string)) return strVal;
-                    try
-                    {
-                        var ctorStr = targetType.GetConstructor(new[] { typeof(string) });
-                        if (ctorStr != null) return ctorStr.Invoke(new object?[] { strVal });
-                        if (targetType.IsEnum) return Enum.Parse(targetType, strVal, ignoreCase: true);
-                        return Convert.ChangeType(strVal, targetType);
-                    }
-                    catch (Exception ex) { LogCatch(ex); }
-                    return null;
-                }
-
-                bool TryBuildArgs(ConstructorInfo ctor, out object?[] argsOut)
-                {
-                    argsOut = Array.Empty<object?>();
-                    var ps = ctor.GetParameters();
-                    var args = new object?[ps.Length];
-                    bool haveLib = false, haveGroup = false;
-                    for (int i = 0; i < ps.Length; i++)
-                    {
-                        var p = ps[i];
-                        var pType = p.ParameterType;
-                        var elemType = pType.IsByRef ? pType.GetElementType() ?? pType : pType;
-                        object? value = null;
-
-                        if (pType.Name.Contains("Ref`", StringComparison.OrdinalIgnoreCase) || elemType.Name.Contains("Ref`", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var gen = pType.IsGenericType ? pType.GetGenericArguments().FirstOrDefault() : elemType.IsGenericType ? elemType.GetGenericArguments().FirstOrDefault() : null;
-                            if (gen == typeof(int))
-                            {
-                                var refCtor = pType.GetConstructor(new[] { typeof(int) }) ?? elemType.GetConstructor(new[] { typeof(int) });
-                                if (refCtor != null)
-                                {
-                                    try { args[i] = refCtor.Invoke(new object?[] { frameIdx }); } catch (Exception ex) { LogCatch(ex); return false; }
-                                    continue;
-                                }
-                            }
-                            return false;
-                        }
-                        if (!haveLib && IsSpriteLib(elemType))
-                        {
-                            if (!elemType.IsInstanceOfType(lib)) return false;
-                            value = lib;
-                            haveLib = true;
-                        }
-                        else if (!haveGroup && IsStringLike(elemType))
-                        {
-                            value = ConvertGroup(elemType);
-                            if (value == null) return false;
-                            haveGroup = true;
-                        }
-                        else if (elemType == typeof(int))
-                        {
-                            value = frameIdx;
-                        }
-                        else if (!IsSpriteLib(elemType) && IsParentLike(elemType))
-                        {
-                            if (parentObj != null && elemType.IsInstanceOfType(parentObj))
-                                value = parentObj;
-                            else if (elemType.IsValueType)
-                                return false;
-                            else
-                                value = null;
-                        }
-                        else
-                        {
-                            if (elemType.IsValueType)
-                            {
-                                try { value = Activator.CreateInstance(elemType); }
-                                catch (Exception ex) { LogCatch(ex); return false; }
-                            }
-                            else
-                            {
-                                value = null;
-                            }
-                        }
-
-                        args[i] = value;
-                    }
-
-                    // If ctor requires lib/group but not provided, skip
-                    if (!haveLib || !haveGroup) return false;
-
-                    argsOut = args;
-                    return true;
-                }
-
-                object? clone = null;
-                foreach (var ctor in spriteType.GetConstructors(Flags).OrderBy(c => c.GetParameters().Length))
-                {
-                    if (!TryBuildArgs(ctor, out var args)) continue;
-                    try
-                    {
-                        clone = ctor.Invoke(args);
-                        if (clone != null) break;
-                    }
-                    catch (Exception ex) { LogCatch(ex); }
-                }
-
-                if (clone == null)
-                {
-                    _log.Warning("[HeroGhost] Clone sprite failed: no suitable ctor; skipping");
-                    return;
-                }
-
-                // Copy frame if possible
-                try
-                {
-                    var setFrame = clone.GetType().GetMethod("set_frame", Flags, binder: null, types: new[] { typeof(int) }, modifiers: null);
-                    if (setFrame != null) setFrame.Invoke(clone, new object?[] { frameIdx });
-                }
-                catch (Exception ex) { LogCatch(ex); }
-
-                // Assign to ghost sprite field/property
-                var gType = ghost.GetType();
-                var sField = gType.GetField("sprite", Flags) ?? gType.GetField("spr", Flags);
-                var sProp = gType.GetProperty("sprite", Flags) ?? gType.GetProperty("spr", Flags);
-                if (sField != null && sField.FieldType.IsInstanceOfType(clone))
-                {
-                    try { sField.SetValue(ghost, clone); } catch (Exception ex) { LogCatch(ex); }
-                }
-                else if (sProp?.CanWrite == true && sProp.PropertyType.IsInstanceOfType(clone))
-                {
-                    try { sProp.SetValue(ghost, clone); } catch (Exception ex) { LogCatch(ex); }
-                }
-            }
-            catch (Exception ex) { LogCatch(ex); }
-        }
 
         private void TryApplyNormal(object heroRef, object ghost)
         {
@@ -1834,38 +1240,6 @@ namespace DeadCellsMultiplayerMod
             catch (Exception ex) { LogCatch(ex); }
         }
 
-        private static bool SetDelegate(Type type, object target, string name)
-        {
-            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-
-            var f = type.GetField(name, Flags);
-            if (f != null)
-            {
-                if (f.FieldType == typeof(Action<double>))
-                {
-                    try { f.SetValue(target, (Action<double>)(_ => { })); return true; } catch (Exception ex) { LogCatch(ex); }
-                }
-                if (f.FieldType == typeof(Action))
-                {
-                    try { f.SetValue(target, (Action)(() => { })); return true; } catch (Exception ex) { LogCatch(ex); }
-                }
-            }
-
-            var p = type.GetProperty(name, Flags);
-            if (p?.CanWrite == true)
-            {
-                if (p.PropertyType == typeof(Action<double>))
-                {
-                    try { p.SetValue(target, (Action<double>)(_ => { })); return true; } catch (Exception ex) { LogCatch(ex); }
-                }
-                if (p.PropertyType == typeof(Action))
-                {
-                    try { p.SetValue(target, (Action)(() => { })); return true; } catch (Exception ex) { LogCatch(ex); }
-                }
-            }
-
-            return false;
-        }
 
         private void TrySetBool(FieldInfo? maybeField, object target, string name, bool value, BindingFlags flags)
         {

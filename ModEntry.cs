@@ -6,12 +6,8 @@ using ModCore.Mods;
 using ModCore.Modules;
 using ModCore.Events.Interfaces.Game.Save;
 using Serilog;
-using System;
-using System.IO;
 using System.Net;
 using System.Reflection;
-using System.Linq;
-using Newtonsoft.Json;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -98,7 +94,6 @@ namespace DeadCellsMultiplayerMod
                     {
                         dynamic h = DynamicAccessUtils.AsDynamic(_heroRef);
                         try { heroTypeStr = (string?)h.type; } catch { }
-                        // У героя есть только _level, не level
                         try { _lastLevelRef = (object?)h._level; } catch { }
                         
                         // Получаем game из уровня или используем Game.Instance
@@ -129,7 +124,6 @@ namespace DeadCellsMultiplayerMod
             if (gm != null)
                 _lastGameRef = gm;
 
-            // шлём ≈10 Гц
             _accum += dt;
             if (_accum < 0.1) return;
             _accum = 0;
@@ -155,14 +149,12 @@ namespace DeadCellsMultiplayerMod
                     Logger.Information("[NetMod] Level changed -> reset ghost");
                 }
 
-                // Получаем game из уровня или используем Game.Instance
                 var gameObj = ExtractGameFromLevel(levelObj) ?? Game.Instance;
                 if (gameObj != null)
                     _lastGameRef = gameObj;
             }
             catch (Exception ex)
             {
-                // Логируем ошибку для отладки, но не падаем
                 Logger.Warning($"[NetMod] OnHeroUpdate error: {ex.Message}");
                 return;
             }
@@ -175,7 +167,6 @@ namespace DeadCellsMultiplayerMod
                 _companion.TryLogGhostPosition();
             }
 
-            // сеть: отправка только при изменениях
             if (_net != null && _net.IsAlive && _netRole != NetRole.None)
             {
                 if (cx != _lastSentCx || cy != _lastSentCy || xr != _lastSentXr || yr != _lastSentYr)
@@ -188,21 +179,18 @@ namespace DeadCellsMultiplayerMod
                 }
             }
 
-            // появление удалённых координат — это триггер спавна призрака
             if (_net == null || !_net.IsAlive || _netRole == NetRole.None) return;
             if (!_net.TryGetRemote(out var rcx, out var rcy, out var rxr, out var ryr)) return;
             if (rcx < 0 || rcy < 0) return;
 
             _companion ??= new CompanionController(Logger);
 
-            // спавним РАЗ на текущем уровне
             if (!_companion.IsSpawned)
             {
                 if (_lastLevelRef != null && _lastGameRef != null && _heroRef != null)
                     _companion.EnsureSpawned(_heroRef, _lastLevelRef, _lastGameRef, cx, cy);
             }
 
-            // и обновляем позицию
             _companion?.TeleportTo(rcx, rcy, rxr, ryr);
         }
 
@@ -342,6 +330,7 @@ namespace DeadCellsMultiplayerMod
 
         private void TryInitialGhostSpawn()
         {
+            if (_netRole == NetRole.None) return;
             if (_initialGhostSpawned) return;
             if (_heroRef == null || _lastLevelRef == null || _lastGameRef == null) return;
 

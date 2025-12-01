@@ -28,6 +28,8 @@ public sealed class NetNode : IDisposable
     private CancellationTokenSource? _cts;
     private Task? _acceptTask;
     private Task? _recvTask;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private bool _disposed;
 
     private readonly object _sync = new();
     private int    _rcx, _rcy;
@@ -173,7 +175,7 @@ public sealed class NetNode : IDisposable
     // ============== COMMON IO ==============
     private async Task RecvLoop(CancellationToken ct)
     {
-        var buf = new byte[1024];
+        var buf = new byte[2048];
         var sb  = new StringBuilder();
 
         try
@@ -181,15 +183,7 @@ public sealed class NetNode : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 var stream = _stream;
-                var sock = _client?.Client;
-                if (stream == null || sock == null) break;
-
-                // Non-blocking poll
-                if (!sock.Poll(0, SelectMode.SelectRead) || sock.Available == 0)
-                {
-                    await Task.Yield();
-                    continue;
-                }
+                if (stream == null) break;
 
                 int n = await stream.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
                 if (n <= 0) break;
@@ -304,16 +298,26 @@ public sealed class NetNode : IDisposable
 
     private async Task SendLineSafe(string line)
     {
-        var s = _stream;
-        if (s == null) return;
+        var stream = _stream;
+        if (stream == null) return;
+
+        var bytes = Encoding.UTF8.GetBytes(line);
+        bool locked = false;
         try
         {
-            var bytes = Encoding.UTF8.GetBytes(line);
-            await s.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
+            await _sendLock.WaitAsync().ConfigureAwait(false);
+            locked = true;
+            await stream.WriteAsync(bytes.AsMemory(0, bytes.Length), CancellationToken.None).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
         }
+        catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
             _log.Warning("[NetNode] send error: {msg}", ex.Message);
+        }
+        finally
+        {
+            if (locked) _sendLock.Release();
         }
     }
 
@@ -443,10 +447,13 @@ public sealed class NetNode : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         try { _cts?.Cancel(); } catch { }
         try { _stream?.Close(); } catch { }
         try { _client?.Close(); } catch { }
         try { _listener?.Stop(); } catch { }
         _stream = null; _client = null; _listener = null;
+        try { _sendLock.Dispose(); } catch { }
     }
 }
