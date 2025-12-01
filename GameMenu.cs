@@ -2,7 +2,6 @@ using System;
 using System.Net;
 using System.Reflection;
 using System.IO;
-using System.Runtime.InteropServices;
 using dc.pr;
 using dc.ui;
 using HaxeProxy.Runtime;
@@ -29,12 +28,6 @@ namespace DeadCellsMultiplayerMod
         private static string _username = "guest";
         private static bool _inHostStatusMenu;
         private static bool _inClientWaitingMenu;
-        private static bool _prevEsc;
-        private static double _escCooldown;
-        private const double EscCooldown = 0.2;
-        private const int VK_ESCAPE = 0x1B;
-        [DllImport("user32.dll")]
-        private static extern short GetAsyncKeyState(int vKey);
 
         private static void InitializeMenuUiHooks()
         {
@@ -72,10 +65,7 @@ namespace DeadCellsMultiplayerMod
             }
 
             if (!shouldStart)
-            {
-                HandleEsc(dt);
                 return;
-            }
 
             var ts = GetTitleScreen();
             if (ts != null)
@@ -103,8 +93,6 @@ namespace DeadCellsMultiplayerMod
                     _pendingAutoStart = true;
                 }
             }
-
-            HandleEsc(dt);
         }
 
         public static void NotifyGameDataReceived()
@@ -987,41 +975,6 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        private static void HandleEsc(double dt)
-        {
-            _escCooldown -= dt;
-            if (_escCooldown < 0) _escCooldown = 0;
-
-            bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
-            bool escEdge = escNow && !_prevEsc && _escCooldown <= 0;
-            _prevEsc = escNow;
-
-            if (!escEdge) return;
-            _escCooldown = EscCooldown;
-
-            var ts = GetTitleScreen();
-            if (ts == null) return;
-
-            if (_inClientWaitingMenu)
-            {
-                DisconnectFromMenu(ts);
-                return;
-            }
-
-            if (_inHostStatusMenu)
-            {
-                ShowConnectionMenu(ts, NetRole.Host);
-                return;
-            }
-
-            if (_menuSelection != NetRole.None)
-            {
-                ShowMultiplayerMenu(ts);
-                return;
-            }
-
-            try { ts.mainMenu(); } catch { }
-        }
 
         private static void StoreTitleScreen(TitleScreen ts)
         {
