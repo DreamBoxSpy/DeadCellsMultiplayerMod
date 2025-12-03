@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Reflection;
 using System.Linq.Expressions;
+using System.IO;
 using Hashlink.Proxy.DynamicAccess;
 using System.Runtime.CompilerServices;
 using Serilog;
@@ -15,7 +16,11 @@ namespace DeadCellsMultiplayerMod
         private object? _ghost;
         private object? _levelRef;
         private object? _gameRef;
+        private object? _heroSourceRef;
+        private object? _heroShaderSnapshot;
+        private object? _heroShaderListSnapshot;
 
+        private const string DefaultEntityType = "dc.Entity";
         private string? _forcedHeroType;
         private MethodInfo? _setPosCase;
         private MethodInfo? _setPos;
@@ -30,7 +35,7 @@ namespace DeadCellsMultiplayerMod
         public HeroGhost(ILogger log) => _log = log;
 
         public bool IsSpawned => _ghost != null;
-        public bool HasEntityType => true;
+        public bool HasEntityType => !string.IsNullOrWhiteSpace(_forcedHeroType);
 
         private static void LogCatch(Exception ex, [CallerMemberName] string? member = null)
         {
@@ -45,7 +50,7 @@ namespace DeadCellsMultiplayerMod
 
         public void FindSuitableEntityType(object? heroRef)
         {
-            // Compatibility shim: we already force a neutral entity type for the ghost.
+            _forcedHeroType ??= DefaultEntityType;
         }
 
         public bool Spawn(object heroRef, object? levelHint, object? gameHint, int spawnCx, int spawnCy)
@@ -55,14 +60,17 @@ namespace DeadCellsMultiplayerMod
             if (heroRef == null)
                 return false;
 
+            _heroSourceRef = heroRef;
+
             if (!TryResolveContext(heroRef, levelHint, gameHint, out var levelObj, out var gameObj))
             {
                 _log.Warning("[HeroGhost] Spawn failed - unable to capture level/game");
                 return false;
             }
 
-            // Force base Entity (dc.Entity) to keep things simple/neutral.
-            var heroTypeString = "dc.Entity";
+            var requestedType = _forcedHeroType ?? DefaultEntityType;
+            _forcedHeroType ??= requestedType;
+            var heroTypeString = requestedType;
             var coords = ExtractCoordsFromHero(heroRef);
             // Always prefer live hero coords so we don't end up at -1/-1
             spawnCx = coords.cx;
@@ -72,20 +80,26 @@ namespace DeadCellsMultiplayerMod
 
             var preferredNames = new[]
             {
+                requestedType,
+                DefaultEntityType,
+                "dc.en.Entity",
+                "dc.en.Mob",
                 "dc.Entity",
                 "en.Entity"
+            }.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().ToArray();
+
+            var searchAssemblies = new[]
+            {
+                gameObj.GetType().Assembly,
+                levelObj.GetType().Assembly,
+                heroRef.GetType().Assembly
             };
 
-            var heroClass = ResolveType(preferredNames, new[]
-                {
-                    gameObj.GetType().Assembly,
-                    levelObj.GetType().Assembly,
-                    heroRef.GetType().Assembly
-                }) ??
+            var heroClass = ResolveType(preferredNames, searchAssemblies) ??
                 ResolveType(preferredNames, AppDomain.CurrentDomain.GetAssemblies()) ??
-                FindEntityClassByName(heroTypeString, gameObj.GetType().Assembly) ??
-                FindEntityClassByName(heroTypeString, levelObj.GetType().Assembly) ??
-                FindEntityClassByName(heroTypeString, heroRef.GetType().Assembly) ??
+                FindEntityClassByName(requestedType, gameObj.GetType().Assembly) ??
+                FindEntityClassByName(requestedType, levelObj.GetType().Assembly) ??
+                FindEntityClassByName(requestedType, heroRef.GetType().Assembly) ??
                 FindEntityClass(gameObj.GetType().Assembly) ??
                 FindEntityClass(levelObj.GetType().Assembly) ??
                 FindEntityClass(heroRef.GetType().Assembly) ??
@@ -99,6 +113,7 @@ namespace DeadCellsMultiplayerMod
 
             try
             {
+                heroTypeString = heroClass.FullName ?? heroTypeString;
                 _ghost = CreateGhostInstance(heroClass, heroRef, gameObj, levelObj, spawnCx, spawnCy, heroTypeString);
                 if (_ghost == null)
                 {
@@ -113,13 +128,17 @@ namespace DeadCellsMultiplayerMod
                 if (_ghost != null) LogPointerInfo(_ghost, warnOnNull: true);
                 TryCopyController(heroRef, _ghost!);
                 TryApplyEntitySetup(heroRef, _ghost!, levelObj);
+                TryCenterSprite(heroRef, _ghost!);
                 TryInvokeLifecycle(_ghost!);
                 var registered = TryRegisterInLevel(levelObj, _ghost!);
                 var placed = TryPlaceGhost(_ghost!, spawnCx, spawnCy, coords.xr, coords.yr, suppressWarnings: true);
                 if (!placed)
                     placed = ForceSetCoords(_ghost!, spawnCx, spawnCy, coords.xr, coords.yr, suppressWarnings: false);
                 if (placed)
+                {
+                    TryCenterSprite(heroRef, _ghost!);
                     TryRefreshSpritePos(_ghost!);
+                }
 
                 var haveCoords = ExtractCoordsFromObject(_ghost!, out var gcx, out var gcy, out var gxr, out var gyr);
                 _log.Information("[HeroGhost] Spawned ghost via {HeroClass} (type={Type}) at {Cx},{Cy} registered={Registered} (ghost now at {PX},{PY},{PXR},{PYR})", heroClass.FullName, heroTypeString, spawnCx, spawnCy, registered, haveCoords ? gcx : -1, haveCoords ? gcy : -1, haveCoords ? gxr : -1, haveCoords ? gyr : -1);
@@ -148,6 +167,7 @@ namespace DeadCellsMultiplayerMod
             {
                 if (TryPlaceGhost(ghost, cx, cy, xr, yr, suppressWarnings: false))
                 {
+                    TryCenterSprite(_heroSourceRef ?? ghost, ghost);
                     TryRefreshSpritePos(ghost);
                     return;
                 }
@@ -166,6 +186,12 @@ namespace DeadCellsMultiplayerMod
         private bool TryPlaceGhost(object ghost, int cx, int cy, double xr, double yr, bool suppressWarnings)
         {
             const BindingFlags AllFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
+            if (TryTeleportLike(ghost, cx, cy, xr, yr))
+            {
+                TryRefreshSpritePos(ghost);
+                return true;
+            }
 
             _setPosCase = ghost.GetType().GetMethod(
                 "setPosCase",
@@ -203,7 +229,7 @@ namespace DeadCellsMultiplayerMod
             return false;
         }
 
-       private void TryRefreshSpritePos(object ghost)
+        private void TryRefreshSpritePos(object ghost)
         {
             const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
 
@@ -220,11 +246,36 @@ namespace DeadCellsMultiplayerMod
                         .FirstOrDefault();
 
                     if (updateLast != null)
+                    {
                         updateLast.Invoke(ghost, Array.Empty<object?>());
+                        _log.Information("[HeroGhost] updateLastSprPos applied");
+                    }
                 }
                 catch (Exception ex)
                 {
                     _log.Warning("[HeroGhost] updateLastSprPos failed: {Message}", ex.Message);
+                }
+
+                // ---------- spriteUpdate() ----------
+                try
+                {
+                    var spriteUpdate = t.GetMethods(Flags)
+                        .FirstOrDefault(m => m.Name == "spriteUpdate" && m.GetParameters().Length == 0);
+                    if (spriteUpdate != null)
+                    {
+                        spriteUpdate.Invoke(ghost, Array.Empty<object?>());
+                        _log.Information("[HeroGhost] spriteUpdate applied");
+
+                        // After spriteUpdate, try to pull hero shader if it appeared.
+                        if (_heroSourceRef != null)
+                        {
+                            TryLateCopyShader(_heroSourceRef, ghost);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Warning("[HeroGhost] spriteUpdate failed: {Message}", ex.Message);
                 }
             }
             catch (Exception ex)
@@ -233,12 +284,1018 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        private void TryCenterSprite(object heroRef, object ghost)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
+            try
+            {
+                var ghostSpr = TryGetFieldOrProp(ghost, "sprite", Flags) ?? TryGetFieldOrProp(ghost, "spr", Flags);
+                if (ghostSpr == null) return;
+
+                var heroSpr = TryGetFieldOrProp(heroRef, "sprite", Flags) ?? TryGetFieldOrProp(heroRef, "spr", Flags);
+
+                double xr = 0.5, yr = 1.0;
+                TryReadDouble(heroSpr, "xr", Flags, ref xr);
+                TryReadDouble(heroSpr, "yr", Flags, ref yr);
+
+                TrySetNumeric(ghostSpr, "xr", xr, Flags);
+                TrySetNumeric(ghostSpr, "yr", yr, Flags);
+
+                CopySpriteOffsets(heroSpr, ghostSpr, Flags);
+
+                _spriteOffsetApplied = true;
+                _log.Information("[HeroGhost] Centered sprite xr={Xr} yr={Yr}", xr, yr);
+            }
+            catch (Exception ex) { LogCatch(ex, "TryCenterSprite"); }
+        }
+
+        private static void TryReadDouble(object? target, string name, BindingFlags flags, ref double value)
+        {
+            if (target == null) return;
+            try
+            {
+                var val = TryGetFieldOrProp(target, name, flags);
+                if (val != null)
+                    value = Convert.ToDouble(val);
+            }
+            catch (Exception ex) { LogCatch(ex); }
+        }
+
+        private void TrySetNumeric(object target, string name, double value, BindingFlags flags)
+        {
+            var t = target.GetType();
+            try
+            {
+                var f = t.GetField(name, flags);
+                if (f != null && IsNumericAssignable(f.FieldType, value))
+                    f.SetValue(target, Convert.ChangeType(value, f.FieldType));
+            }
+            catch (Exception ex) { LogCatch(ex); }
+
+            try
+            {
+                var p = t.GetProperty(name, flags);
+                if (p?.CanWrite == true && IsNumericAssignable(p.PropertyType, value))
+                    p.SetValue(target, Convert.ChangeType(value, p.PropertyType));
+            }
+            catch (Exception ex) { LogCatch(ex); }
+        }
+
+        private static void TrySetFieldOrProp(object target, string name, object? value, BindingFlags flags)
+        {
+            if (value == null) return;
+            var t = target.GetType();
+            try
+            {
+                var f = t.GetField(name, flags);
+                if (f != null && f.FieldType.IsInstanceOfType(value))
+                {
+                    f.SetValue(target, value);
+                    return;
+                }
+                if (f != null && IsNumericAssignable(f.FieldType, value))
+                {
+                    f.SetValue(target, Convert.ChangeType(value, f.FieldType));
+                    return;
+                }
+            }
+            catch (Exception ex) { LogCatch(ex); }
+
+            try
+            {
+                var p = t.GetProperty(name, flags);
+                if (p?.CanWrite == true && p.PropertyType.IsInstanceOfType(value))
+                {
+                    p.SetValue(target, value);
+                    return;
+                }
+                if (p?.CanWrite == true && IsNumericAssignable(p.PropertyType, value))
+                {
+                    p.SetValue(target, Convert.ChangeType(value, p.PropertyType));
+                }
+            }
+            catch (Exception ex) { LogCatch(ex); }
+        }
+
+        private void CopySpriteOffsets(object? srcSpr, object dstSpr, BindingFlags flags)
+        {
+            if (dstSpr == null) return;
+            var numericNames = new[]
+            {
+                "ox","oy","offsetX","offsetY","pivotX","pivotY",
+                "centerX","centerY","anchorX","anchorY","baseY"
+            };
+
+            foreach (var name in numericNames)
+            {
+                var val = TryGetFieldOrProp(srcSpr, name, flags);
+                if (val == null) continue;
+                try
+                {
+                    var d = Convert.ToDouble(val);
+                    TrySetNumeric(dstSpr, name, d, flags);
+                    _log.Information("[HeroGhost] Copy sprite offset {Name}={Value}", name, d);
+                }
+                catch (Exception ex) { LogCatch(ex); }
+            }
+        }
+
+        private void TryCopySpriteAppearance(object heroSpr, object ghostSpr)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
+            var copyList = new[]
+            {
+                "lib","group","groupName","name","frameData","anim","animManager","material","mat",
+                "layerConf","layer","depth","lighted","shader","texture","nrmTex","normalTex","normalMap","tile"
+            };
+
+            foreach (var name in copyList)
+            {
+                var val = TryGetFieldOrProp(heroSpr, name, Flags);
+                if (val != null)
+                {
+                    TrySetFieldOrProp(ghostSpr, name, val, Flags);
+                    if (name is "lib" or "group" or "groupName" or "material" or "shader" or "texture")
+                        _log.Information("[HeroGhost] Copied sprite field {Field}", name);
+                }
+            }
+
+            // Frame handled by TrySyncSpriteFrame, but ensure sprite lib/group is set before frame
+            var frameVal = TryGetFieldOrProp(heroSpr, "frame", Flags);
+            if (frameVal != null)
+            {
+                TrySetFieldOrProp(ghostSpr, "frame", frameVal, Flags);
+                _log.Information("[HeroGhost] Copied sprite frame={Frame}", frameVal);
+            }
+
+            CopySpriteOffsets(heroSpr, ghostSpr, Flags);
+        }
+
+        private void TryCopyShaderAndMaterial(object heroSpr, object ghostSpr)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            try
+            {
+                // wipe any cached shader ids/queue to avoid engine retry on missing shaderLinker key
+                ClearShaderKeys(ghostSpr, Flags);
+                var heroShaderList = _heroShaderListSnapshot ?? TryGetFieldOrProp(heroSpr, "shaders", Flags);
+                var heroShaderKey = TryGetShaderKey(heroSpr, Flags);
+                var heroShaderListCount = heroShaderList != null ? CountShaderList(heroShaderList, Flags) : 0;
+                object? preferredListShader = heroShaderList != null ? TryExtractShaderFromList(heroShaderList, Flags, preferColorMap: true) : null;
+                if (heroShaderList != null)
+                {
+                    var clonedList = CloneShaderList(heroShaderList, Flags);
+                    if (clonedList != null)
+                    {
+                        var singleList = preferredListShader != null ? CreateSingleShaderList(clonedList, preferredListShader, Flags) : null;
+                        var toApply = singleList ?? clonedList;
+                        var len = CountShaderList(toApply, Flags);
+                        _log.Information("[HeroGhost] Copied shaders list from hero sprite (count={Count}, applied=True)", len, true);
+                        _heroShaderListSnapshot = null;
+                        DumpShaderListTypes("Hero shader list", heroShaderList, Flags);
+                        DumpShaderListTypes("Ghost shader list", toApply, Flags);
+                        TrySetFieldOrProp(ghostSpr, "shaders", toApply, Flags);
+                        ApplyShaderListSetter(ghostSpr, toApply, Flags);
+                    }
+                }
+
+                if (heroShaderKey == null && heroShaderList != null)
+                {
+                    heroShaderKey = TryExtractShaderKeyFromList(heroShaderList, Flags);
+                    if (heroShaderKey != null)
+                        _log.Information("[HeroGhost] Extracted shader key from list ({Key})", heroShaderKey);
+                }
+                if (heroShaderKey == null)
+                {
+                    var colorMap = TryGetFieldOrProp(heroSpr, "colorMap", Flags);
+                    if (colorMap != null)
+                    {
+                        heroShaderKey = colorMap;
+                        _log.Information("[HeroGhost] Using colorMap as shader key ({Key})", heroShaderKey);
+                    }
+                }
+
+                if (heroShaderKey != null)
+                {
+                    TrySetShaderKey(ghostSpr, heroShaderKey, Flags);
+                    ApplyShaderKeySetter(ghostSpr, heroShaderKey, Flags);
+                }
+                else
+                {
+                    ClearShaderKeys(ghostSpr, Flags);
+                    TrySetFieldOrProp(ghostSpr, "shaderQueue", null, Flags);
+                }
+                // Disable asset fetch path to avoid shaderLinker cache lookups.
+                heroShaderKey = null;
+
+                var shader = _heroShaderSnapshot
+                             ?? TryGetFieldOrProp(heroSpr, "shader", Flags)
+                             ?? TryGetFieldOrProp(heroSpr, "mat", Flags)
+                             ?? TryGetFieldOrProp(heroSpr, "material", Flags);
+                if (preferredListShader != null) shader = preferredListShader;
+                if (shader == null && heroShaderList != null)
+                {
+                    shader = TryExtractShaderFromList(heroShaderList, Flags, preferColorMap: true);
+                    if (shader != null)
+                        _log.Information("[HeroGhost] Extracted shader from hero shader list ({Type})", shader.GetType().FullName);
+                }
+                var normal = TryGetFieldOrProp(heroSpr, "nrmTex", Flags)
+                             ?? TryGetFieldOrProp(heroSpr, "normalTex", Flags)
+                             ?? TryGetFieldOrProp(heroSpr, "normalMap", Flags);
+                var colorMapValue = TryGetFieldOrProp(heroSpr, "colorMap", Flags);
+
+                if (shader != null)
+                {
+                    TrySetFieldOrProp(ghostSpr, "shader", shader, Flags);
+                    TrySetFieldOrProp(ghostSpr, "mat", shader, Flags);
+                    TrySetFieldOrProp(ghostSpr, "material", shader, Flags);
+                    ApplyShaderTargets(ghostSpr, shader, Flags);
+                    if (TryGetFieldOrProp(ghostSpr, "shader", Flags) == null)
+                    {
+                        ApplyShaderSetter(ghostSpr, shader, Flags);
+                    }
+                    _log.Information("[HeroGhost] Copied shader/material from hero sprite ({ShaderType})", shader.GetType().FullName);
+                    _heroShaderSnapshot = null;
+                }
+                if (normal != null)
+                {
+                    TrySetFieldOrProp(ghostSpr, "nrmTex", normal, Flags);
+                    TrySetFieldOrProp(ghostSpr, "normalTex", normal, Flags);
+                    TrySetFieldOrProp(ghostSpr, "normalMap", normal, Flags);
+                    _log.Information("[HeroGhost] Copied normal map from hero sprite");
+                }
+                if (colorMapValue != null)
+                {
+                    TrySetFieldOrProp(ghostSpr, "colorMap", colorMapValue, Flags);
+                    _log.Information("[HeroGhost] Copied colorMap from hero sprite");
+                }
+
+                InvokeShaderInit(heroSpr, ghostSpr, shader);
+
+                if (TryGetFieldOrProp(ghostSpr, "shader", Flags) == null && heroShaderKey != null)
+                {
+                    var fromAssets = TryFetchShaderFromAssets(heroShaderKey);
+                    if (fromAssets != null)
+                    {
+                        ApplyShaderSetter(ghostSpr, fromAssets, Flags);
+                        TrySetShaderKey(ghostSpr, heroShaderKey, Flags);
+                        ApplyShaderKeySetter(ghostSpr, heroShaderKey, Flags);
+                        _log.Information("[HeroGhost] Applied shader from Assets by key");
+                    }
+                    else
+                    {
+                        _log.Warning("[HeroGhost] Failed to fetch shader from Assets for key {Key}", heroShaderKey);
+                    }
+                }
+                var finalShader = TryGetFieldOrProp(ghostSpr, "shader", Flags)
+                                  ?? TryGetFieldOrProp(ghostSpr, "mat", Flags)
+                                  ?? TryGetFieldOrProp(ghostSpr, "material", Flags);
+                var ghostShaderList = TryGetFieldOrProp(ghostSpr, "shaders", Flags);
+                if (finalShader == null && ghostShaderList != null)
+                {
+                    var preferred = TryExtractShaderFromList(ghostShaderList, Flags, preferColorMap: true);
+                    if (preferred != null)
+                    {
+                        ApplyShaderTargets(ghostSpr, preferred, Flags);
+                        ApplyShaderSetter(ghostSpr, preferred, Flags);
+                        finalShader = TryGetFieldOrProp(ghostSpr, "shader", Flags)
+                                      ?? TryGetFieldOrProp(ghostSpr, "mat", Flags)
+                                      ?? TryGetFieldOrProp(ghostSpr, "material", Flags);
+                        if (finalShader != null)
+                            _log.Information("[HeroGhost] Applied preferred shader from list ({Type})", finalShader.GetType().FullName);
+                    }
+                }
+                if (finalShader == null && shader != null)
+                {
+                    ApplyShaderSetter(ghostSpr, shader, Flags);
+                    ApplyShaderTargets(ghostSpr, shader, Flags);
+                    finalShader = TryGetFieldOrProp(ghostSpr, "shader", Flags)
+                                  ?? TryGetFieldOrProp(ghostSpr, "mat", Flags)
+                                  ?? TryGetFieldOrProp(ghostSpr, "material", Flags);
+                    if (finalShader != null)
+                        _log.Information("[HeroGhost] Shader applied after init via setter ({Type})", finalShader.GetType().FullName);
+                }
+                if (finalShader == null && ghostShaderList != null)
+                {
+                    var count = CountShaderList(ghostShaderList, Flags);
+                    _log.Information("[HeroGhost] Using shader list only; shader field null (list count={Count})", count);
+                }
+                if (finalShader == null && ghostShaderList == null)
+                {
+                    ClearShaderKeys(ghostSpr, Flags);
+                    DumpShaderTargets(ghostSpr, Flags);
+                    var heroShaderType = shader?.GetType().FullName ?? "null";
+                    _log.Error("[HeroGhost] Ghost shader still null after copy/fetch; fallback disabled (key={Key}, heroShader={HeroShader}, heroShaderListCount={Count})", heroShaderKey ?? "null", heroShaderType, heroShaderListCount);
+                }
+                if (finalShader == null)
+                {
+                    var fallbackApplied = TryApplyStandaloneMaterial(heroSpr, ghostSpr, Flags);
+                    finalShader = TryGetFieldOrProp(ghostSpr, "shader", Flags)
+                                  ?? TryGetFieldOrProp(ghostSpr, "mat", Flags)
+                                  ?? TryGetFieldOrProp(ghostSpr, "material", Flags);
+                    if (fallbackApplied && finalShader != null)
+                    {
+                        _log.Information("[HeroGhost] Applied standalone fallback material ({Type})", finalShader.GetType().FullName);
+                    }
+                }
+                // ensure no leftover cache ids that would trigger shaderLinker lookups
+                ClearShaderKeys(ghostSpr, Flags);
+            }
+            catch (Exception ex) { LogCatch(ex, "TryCopyShaderAndMaterial"); }
+        }
+
+        private void InvokeShaderInit(object heroSpr, object ghostSpr, object? shaderInstance)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            try
+            {
+                var ghostType = ghostSpr.GetType();
+                foreach (var name in new[] { "initShaders", "initShader", "ensureShaders", "buildShader" })
+                {
+                    var m = ghostType.GetMethod(name, Flags, binder: null, types: Type.EmptyTypes, modifiers: null);
+                    if (m != null)
+                    {
+                        m.Invoke(ghostSpr, Array.Empty<object?>());
+                        _log.Information("[HeroGhost] Invoked {Method} on ghost sprite", name);
+                        break;
+                    }
+                }
+
+                // Try applying hero shader through setter if exists
+                var heroShader = shaderInstance ?? TryGetFieldOrProp(heroSpr, "shader", Flags) ?? TryGetFieldOrProp(heroSpr, "mat", Flags);
+                if (heroShader != null)
+                {
+                    ApplyShaderSetter(heroSpr, heroShader, Flags);
+                    var setter = ghostType.GetMethods(Flags)
+                        .FirstOrDefault(x => (x.Name == "set_shader" || x.Name == "set_mat" || x.Name == "set_material") &&
+                                             x.GetParameters().Length == 1 &&
+                                             x.GetParameters()[0].ParameterType.IsInstanceOfType(heroShader));
+                    if (setter != null)
+                    {
+                        setter.Invoke(ghostSpr, new[] { heroShader });
+                        _log.Information("[HeroGhost] Applied shader via setter {Setter}", setter.Name);
+                    }
+                }
+            }
+            catch (Exception ex) { LogCatch(ex, "InvokeShaderInit"); }
+        }
+
+        private void ApplyShaderSetter(object targetSpr, object shader, BindingFlags flags)
+        {
+            try
+            {
+                var t = targetSpr.GetType();
+                var setter = t.GetMethods(flags)
+                    .FirstOrDefault(x => (x.Name == "set_shader" || x.Name == "set_mat" || x.Name == "set_material") &&
+                                         x.GetParameters().Length == 1 &&
+                                         x.GetParameters()[0].ParameterType.IsInstanceOfType(shader));
+                setter?.Invoke(targetSpr, new[] { shader });
+            }
+            catch (Exception ex) { LogCatch(ex, "ApplyShaderSetter"); }
+        }
+
+        private void TryLateCopyShader(object heroRef, object ghost)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            try
+            {
+                var heroSpr = TryGetFieldOrProp(heroRef, "sprite", Flags) ?? TryGetFieldOrProp(heroRef, "spr", Flags);
+                var ghostSpr = TryGetFieldOrProp(ghost, "sprite", Flags) ?? TryGetFieldOrProp(ghost, "spr", Flags);
+                if (heroSpr == null || ghostSpr == null)
+                    return;
+
+                var heroShader = TryGetFieldOrProp(heroSpr, "shader", Flags) ?? TryGetFieldOrProp(heroSpr, "mat", Flags) ?? TryGetFieldOrProp(heroSpr, "material", Flags);
+                if (heroShader == null)
+                {
+                    _log.Information("[HeroGhost] Late shader copy: hero shader still null, applying standalone");
+                    if (TryApplyStandaloneMaterial(heroSpr, ghostSpr, Flags))
+                        _log.Information("[HeroGhost] Standalone shader applied in late copy");
+                    return;
+                }
+
+                ApplyShaderSetter(ghostSpr, heroShader, Flags);
+                _log.Information("[HeroGhost] Late shader copy applied ({Type})", heroShader.GetType().FullName);
+            }
+            catch (Exception ex) { LogCatch(ex, "TryLateCopyShader"); }
+        }
+
+        private void ClearShaderKeys(object targetSpr, BindingFlags flags)
+        {
+            TrySetFieldOrProp(targetSpr, "shaderKey", null, flags);
+            TrySetFieldOrProp(targetSpr, "shaderCacheId", null, flags);
+            TrySetFieldOrProp(targetSpr, "shaderId", null, flags);
+            TrySetFieldOrProp(targetSpr, "shaderQueue", null, flags);
+        }
+
+        private object? TryGetShaderKey(object spr, BindingFlags flags)
+        {
+            return TryGetFieldOrProp(spr, "shaderKey", flags)
+                   ?? TryGetFieldOrProp(spr, "shaderCacheId", flags)
+                   ?? TryGetFieldOrProp(spr, "shaderId", flags);
+        }
+
+        private void TrySetShaderKey(object spr, object key, BindingFlags flags)
+        {
+            TrySetFieldOrProp(spr, "shaderKey", key, flags);
+            TrySetFieldOrProp(spr, "shaderCacheId", key, flags);
+            TrySetFieldOrProp(spr, "shaderId", key, flags);
+        }
+
+        private object? TryFetchShaderFromAssets(object key)
+        {
+            try
+            {
+                var assetsType =
+                    Type.GetType("dc.Assets, GameProxy") ??
+                    Type.GetType("dc.Assets, GamePseudocode") ??
+                    AppDomain.CurrentDomain.GetAssemblies()
+                        .Select(a => a.GetType("dc.Assets"))
+                        .FirstOrDefault(t => t != null);
+                if (assetsType == null)
+                {
+                    try
+                    {
+                        var pseudoPath = @"C:\SteamLibrary\steamapps\common\Dead Cells\coremod\cache\GamePseudocode.dll";
+                        if (File.Exists(pseudoPath))
+                        {
+                            var asm = Assembly.LoadFile(pseudoPath);
+                            assetsType = asm.GetType("dc.Assets");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warning("[HeroGhost] Failed to load GamePseudocode for Assets: {Message}", ex.Message);
+                    }
+                }
+                if (assetsType == null)
+                {
+                    _log.Warning("[HeroGhost] Assets type not found for shader fetch");
+                    return null;
+                }
+
+                var classProp = assetsType.GetProperty("Class", BindingFlags.Public | BindingFlags.Static);
+                var assetsObj = classProp?.GetValue(null);
+                if (assetsObj == null) return null;
+
+                const BindingFlags LinkerFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+                var linker = assetsObj.GetType().GetField("shaderLinker", LinkerFlags)?.GetValue(assetsObj)
+                             ?? assetsObj.GetType().GetProperty("shaderLinker", LinkerFlags)?.GetValue(assetsObj);
+                if (linker == null)
+                {
+                    linker = assetsObj.GetType().GetFields(LinkerFlags)
+                        .Where(f => f.Name.Contains("shader", StringComparison.OrdinalIgnoreCase) && f.Name.Contains("link", StringComparison.OrdinalIgnoreCase))
+                        .Select(f => f.GetValue(assetsObj))
+                        .FirstOrDefault(v => v != null)
+                             ?? assetsObj.GetType().GetProperties(LinkerFlags)
+                        .Where(p => p.CanRead && p.Name.Contains("shader", StringComparison.OrdinalIgnoreCase) && p.Name.Contains("link", StringComparison.OrdinalIgnoreCase))
+                        .Select(p => p.GetValue(assetsObj))
+                        .FirstOrDefault(v => v != null);
+                }
+                if (linker == null)
+                {
+                    try
+                    {
+                        var fields = assetsObj.GetType().GetFields(LinkerFlags)
+                            .Select(f => $"{f.Name}:{f.FieldType.Name}")
+                            .ToArray();
+                        var props = assetsObj.GetType().GetProperties(LinkerFlags)
+                            .Select(p => $"{p.Name}:{p.PropertyType.Name}")
+                            .ToArray();
+                        _log.Warning("[HeroGhost] Assets shaderLinker not found; fields={Fields} props={Props}", string.Join(";", fields), string.Join(";", props));
+                    }
+                    catch (Exception ex) { LogCatch(ex, "TryFetchShaderFromAssets.FieldsDump"); }
+                    _log.Warning("[HeroGhost] Assets shaderLinker not found");
+                    return null;
+                }
+
+                DumpLinkerMethods(linker);
+
+                var getter = linker.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .FirstOrDefault(m =>
+                        (m.Name.Contains("getShader", StringComparison.OrdinalIgnoreCase) ||
+                         m.Name.Contains("fetch", StringComparison.OrdinalIgnoreCase) ||
+                         m.Name.Contains("get", StringComparison.OrdinalIgnoreCase)) &&
+                        m.GetParameters().Length == 1);
+                if (getter == null)
+                {
+                    _log.Warning("[HeroGhost] shaderLinker getter not found");
+                    return null;
+                }
+
+                var argType = getter.GetParameters()[0].ParameterType;
+                var arg = argType == typeof(string) ? key.ToString() : key;
+                var shader = getter.Invoke(linker, new[] { arg });
+                if (shader != null)
+                    _log.Information("[HeroGhost] Fetched shader from Assets shaderLinker");
+                return shader;
+            }
+            catch (Exception ex) { LogCatch(ex, "TryFetchShaderFromAssets"); return null; }
+        }
+
+        private void DumpLinkerMethods(object linker)
+        {
+            try
+            {
+                var methods = linker.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Select(m => $"{m.Name}({string.Join(",", m.GetParameters().Select(p => p.ParameterType.Name))})")
+                    .ToArray();
+                _log.Warning("[HeroGhost] shaderLinker methods: {Methods}", string.Join("; ", methods));
+            }
+            catch (Exception ex) { LogCatch(ex, "DumpLinkerMethods"); }
+        }
+
+        private object? CloneShaderList(object? listObj, BindingFlags flags)
+        {
+            if (listObj == null) return null;
+            try
+            {
+                var t = listObj.GetType();
+                var shader = TryGetFieldOrProp(listObj, "s", flags);
+                var next = TryGetFieldOrProp(listObj, "next", flags);
+                var clonedNext = CloneShaderList(next, flags);
+
+                object? cloned = null;
+                var ctor = t.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .FirstOrDefault(c =>
+                    {
+                        var ps = c.GetParameters();
+                        if (ps.Length != 2) return false;
+                        var ok0 = shader == null || ps[0].ParameterType.IsInstanceOfType(shader) || ps[0].ParameterType.IsAssignableFrom(shader.GetType());
+                        var ok1 = clonedNext == null || ps[1].ParameterType.IsInstanceOfType(clonedNext) || ps[1].ParameterType.IsAssignableFrom(t);
+                        return ok0 && ok1;
+                    });
+                if (ctor != null)
+                {
+                    cloned = ctor.Invoke(new[] { shader, clonedNext });
+                }
+                else
+                {
+                    cloned = Activator.CreateInstance(t, nonPublic: true);
+                    if (cloned != null)
+                    {
+                        TrySetFieldOrProp(cloned, "s", shader, flags);
+                        TrySetFieldOrProp(cloned, "next", clonedNext, flags);
+                    }
+                }
+                return cloned;
+            }
+            catch (Exception ex) { LogCatch(ex, "CloneShaderList"); return null; }
+        }
+
+        private int CountShaderList(object? listObj, BindingFlags flags, int depth = 0)
+        {
+            if (listObj == null || depth > 64) return 0;
+            try
+            {
+                var next = TryGetFieldOrProp(listObj, "next", flags);
+                return 1 + CountShaderList(next, flags, depth + 1);
+            }
+            catch (Exception ex) { LogCatch(ex, "CountShaderList"); return 0; }
+        }
+
+        private object? TryExtractShaderFromList(object? listObj, BindingFlags flags, bool preferBase = false, bool preferColorMap = false)
+        {
+            if (listObj == null) return null;
+            try
+            {
+                object? best = null;
+                var cursor = listObj;
+                for (var depth = 0; depth < 64 && cursor != null; depth++)
+                {
+                    var shader = TryGetFieldOrProp(cursor, "s", flags);
+                    if (shader != null)
+                    {
+                        var name = shader.GetType().FullName ?? string.Empty;
+                        if (preferColorMap && name.Contains("colormap", StringComparison.OrdinalIgnoreCase))
+                            return shader;
+                        if (!preferBase || name.Contains("Base2d", StringComparison.OrdinalIgnoreCase))
+                            return shader;
+                        best ??= shader;
+                    }
+                    cursor = TryGetFieldOrProp(cursor, "next", flags);
+                }
+                return best;
+            }
+            catch (Exception ex) { LogCatch(ex, "TryExtractShaderFromList"); return null; }
+        }
+
+        private object? TryExtractShaderKeyFromList(object? listObj, BindingFlags flags, int depth = 0)
+        {
+            if (listObj == null || depth > 64) return null;
+            try
+            {
+                var shader = TryGetFieldOrProp(listObj, "s", flags);
+                var key = TryGetShaderKey(shader!, flags);
+                if (key != null) return key;
+                var next = TryGetFieldOrProp(listObj, "next", flags);
+                return TryExtractShaderKeyFromList(next, flags, depth + 1);
+            }
+            catch (Exception ex) { LogCatch(ex, "TryExtractShaderKeyFromList"); return null; }
+        }
+
+        private void DumpShaderListTypes(string label, object? listObj, BindingFlags flags, int depth = 0)
+        {
+            if (listObj == null || depth > 32) return;
+            try
+            {
+                var shader = TryGetFieldOrProp(listObj, "s", flags);
+                var name = shader?.GetType().FullName ?? "null";
+                _log.Information("[HeroGhost] {Label} node{Depth}: {Type}", label, depth, name);
+                var next = TryGetFieldOrProp(listObj, "next", flags);
+                if (next != null)
+                    DumpShaderListTypes(label, next, flags, depth + 1);
+            }
+            catch (Exception ex) { LogCatch(ex, "DumpShaderListTypes"); }
+        }
+
+        private object? CreateSingleShaderList(object? listPrototype, object shader, BindingFlags flags)
+        {
+            if (listPrototype == null || shader == null) return null;
+            try
+            {
+                var t = listPrototype.GetType();
+                var ctor = t.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .FirstOrDefault(c =>
+                    {
+                        var ps = c.GetParameters();
+                        return ps.Length == 2 && (ps[0].ParameterType.IsInstanceOfType(shader) || ps[0].ParameterType.IsAssignableFrom(shader.GetType()));
+                    });
+                if (ctor != null)
+                {
+                    return ctor.Invoke(new[] { shader, null });
+                }
+                var inst = Activator.CreateInstance(t, nonPublic: true);
+                if (inst != null)
+                {
+                    TrySetFieldOrProp(inst, "s", shader, flags);
+                    TrySetFieldOrProp(inst, "next", null, flags);
+                }
+                return inst;
+            }
+            catch (Exception ex) { LogCatch(ex, "CreateSingleShaderList"); return null; }
+        }
+
+        private bool TryApplyStandaloneMaterial(object heroSpr, object ghostSpr, BindingFlags flags)
+        {
+            try
+            {
+                var fallback = TryCreateBaseShader(heroSpr.GetType().Assembly) ?? TryCreateBaseShader(ghostSpr.GetType().Assembly);
+                if (fallback == null) return false;
+
+                var tex = TryGetFieldOrProp(heroSpr, "texture", flags)
+                          ?? TryGetFieldOrProp(heroSpr, "tex", flags)
+                          ?? TryGetFieldOrProp(heroSpr, "tile", flags);
+                var nrm = TryGetFieldOrProp(heroSpr, "nrmTex", flags)
+                          ?? TryGetFieldOrProp(heroSpr, "normalTex", flags)
+                          ?? TryGetFieldOrProp(heroSpr, "normalMap", flags);
+                var colorMap = TryGetFieldOrProp(heroSpr, "colorMap", flags);
+
+                TrySetFieldOrProp(ghostSpr, "shader", fallback, flags);
+                TrySetFieldOrProp(ghostSpr, "mat", fallback, flags);
+                TrySetFieldOrProp(ghostSpr, "material", fallback, flags);
+                ApplyShaderTargets(ghostSpr, fallback, flags);
+
+                if (tex != null)
+                {
+                    TrySetFieldOrProp(ghostSpr, "texture", tex, flags);
+                    TrySetFieldOrProp(ghostSpr, "tex", tex, flags);
+                    TrySetFieldOrProp(ghostSpr, "tile", tex, flags);
+                }
+                if (nrm != null)
+                {
+                    TrySetFieldOrProp(ghostSpr, "nrmTex", nrm, flags);
+                    TrySetFieldOrProp(ghostSpr, "normalTex", nrm, flags);
+                    TrySetFieldOrProp(ghostSpr, "normalMap", nrm, flags);
+                }
+                if (colorMap != null)
+                {
+                    TrySetFieldOrProp(ghostSpr, "colorMap", colorMap, flags);
+                }
+
+                TrySetFieldOrProp(ghostSpr, "shaders", null, flags);
+                ClearShaderKeys(ghostSpr, flags);
+                TrySetFieldOrProp(ghostSpr, "shaderQueue", null, flags);
+                _log.Information("[HeroGhost] Standalone material applied with Base shader (no shaderLinker)");
+                return true;
+            }
+            catch (Exception ex) { LogCatch(ex, "TryApplyStandaloneMaterial"); return false; }
+        }
+
+        private void ApplyShaderListSetter(object targetSpr, object listObj, BindingFlags flags)
+        {
+            try
+            {
+                var t = targetSpr.GetType();
+                var setter = t.GetMethods(flags)
+                    .FirstOrDefault(m =>
+                        (m.Name.Equals("set_shaders", StringComparison.OrdinalIgnoreCase) ||
+                         m.Name.Equals("setShaders", StringComparison.OrdinalIgnoreCase) ||
+                         m.Name.Equals("applyShaders", StringComparison.OrdinalIgnoreCase)) &&
+                        m.GetParameters().Length == 1 &&
+                        m.GetParameters()[0].ParameterType.IsInstanceOfType(listObj));
+                setter?.Invoke(targetSpr, new[] { listObj });
+                if (setter != null)
+                    _log.Information("[HeroGhost] Applied shader list via {Setter}", setter.Name);
+            }
+            catch (Exception ex) { LogCatch(ex, "ApplyShaderListSetter"); }
+        }
+
+        private void ApplyShaderKeySetter(object targetSpr, object key, BindingFlags flags)
+        {
+            try
+            {
+                var t = targetSpr.GetType();
+                var setter = t.GetMethods(flags)
+                    .FirstOrDefault(m =>
+                        (m.Name.Equals("set_shaderKey", StringComparison.OrdinalIgnoreCase) ||
+                         m.Name.Equals("setShaderKey", StringComparison.OrdinalIgnoreCase)) &&
+                        m.GetParameters().Length == 1 &&
+                        m.GetParameters()[0].ParameterType.IsInstanceOfType(key));
+                setter?.Invoke(targetSpr, new[] { key });
+                if (setter != null)
+                    _log.Information("[HeroGhost] Applied shader key via {Setter}", setter.Name);
+            }
+            catch (Exception ex) { LogCatch(ex, "ApplyShaderKeySetter"); }
+        }
+
+        private void ApplyShaderTargets(object targetSpr, object shader, BindingFlags flags)
+        {
+            try
+            {
+                var t = targetSpr.GetType();
+                var fields = t.GetFields(flags)
+                    .Where(f => f.Name.Contains("shader", StringComparison.OrdinalIgnoreCase) && !f.Name.Equals("shaders", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                foreach (var f in fields)
+                {
+                    if (f.FieldType.IsInstanceOfType(shader) || f.FieldType.IsAssignableFrom(shader.GetType()))
+                    {
+                        try { f.SetValue(targetSpr, shader); _log.Information("[HeroGhost] Applied shader to field {Field}", f.Name); } catch (Exception ex) { LogCatch(ex, "ApplyShaderTargets(field)"); }
+                    }
+                }
+
+                var props = t.GetProperties(flags)
+                    .Where(p => p.CanWrite && p.Name.Contains("shader", StringComparison.OrdinalIgnoreCase) && !p.Name.Equals("shaders", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                foreach (var p in props)
+                {
+                    if (p.PropertyType.IsInstanceOfType(shader) || p.PropertyType.IsAssignableFrom(shader.GetType()))
+                    {
+                        try { p.SetValue(targetSpr, shader); _log.Information("[HeroGhost] Applied shader to prop {Prop}", p.Name); } catch (Exception ex) { LogCatch(ex, "ApplyShaderTargets(prop)"); }
+                    }
+                }
+            }
+            catch (Exception ex) { LogCatch(ex, "ApplyShaderTargets"); }
+        }
+
+        private void DumpShaderTargets(object targetSpr, BindingFlags flags)
+        {
+            try
+            {
+                var t = targetSpr.GetType();
+                var fields = t.GetFields(flags)
+                    .Where(f => f.Name.Contains("shader", StringComparison.OrdinalIgnoreCase))
+                    .Select(f => $"{f.Name}:{f.FieldType.Name}={ValueSafe(() => f.GetValue(targetSpr))}")
+                    .ToArray();
+                var props = t.GetProperties(flags)
+                    .Where(p => p.Name.Contains("shader", StringComparison.OrdinalIgnoreCase))
+                    .Select(p => $"{p.Name}:{p.PropertyType.Name}={ValueSafe(() => p.GetValue(targetSpr))}")
+                    .ToArray();
+                _log.Warning("[HeroGhost] Sprite shader targets fields={Fields} props={Props}", string.Join(";", fields), string.Join(";", props));
+            }
+            catch (Exception ex) { LogCatch(ex, "DumpShaderTargets"); }
+        }
+
+        private static string ValueSafe(Func<object?> getter)
+        {
+            try
+            {
+                var v = getter();
+                return v == null ? "null" : v.GetType().Name;
+            }
+            catch (Exception ex) { return $"err:{ex.Message}"; }
+        }
+
+        private object? TryCreateBaseShader(Assembly asm)
+        {
+            try
+            {
+                var t = asm.GetType("dc.shader.Base2d") ?? asm.GetType("dc.h3d.shader.Base2d");
+                if (t != null) return Activator.CreateInstance(t);
+                // fallback to ghost shader (colored) to get anything visible
+                var ghost = asm.GetType("dc.shader.Ghost");
+                if (ghost != null) return Activator.CreateInstance(ghost, args: new object?[] { null, null });
+            }
+            catch (Exception ex) { LogCatch(ex, "TryCreateBaseShader"); }
+            return null;
+        }
+
+
+        private void CopySpriteAllFields(object heroSpr, object ghostSpr)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "x","y","z","cx","cy","xr","yr","parent","children","_hxPtr","HashlinkPointer","HashlinkObj"
+            };
+
+            try
+            {
+                var heroType = heroSpr.GetType();
+                foreach (var hf in heroType.GetFields(Flags))
+                {
+                    if (skip.Contains(hf.Name)) continue;
+                    var value = hf.GetValue(heroSpr);
+                    if (value == null) continue;
+                    TrySetFieldOrProp(ghostSpr, hf.Name, value, Flags);
+                }
+
+                foreach (var hp in heroType.GetProperties(Flags))
+                {
+                    if (!hp.CanRead || skip.Contains(hp.Name)) continue;
+                    object? value;
+                    try { value = hp.GetValue(heroSpr); } catch { continue; }
+                    if (value == null) continue;
+                    TrySetFieldOrProp(ghostSpr, hp.Name, value, Flags);
+                }
+
+                _log.Information("[HeroGhost] Copied generic sprite fields");
+            }
+            catch (Exception ex) { LogCatch(ex, "CopySpriteAllFields"); }
+        }
+
+        private object? TryCloneSprite(object heroSpr)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            try
+            {
+                var t = heroSpr.GetType();
+                var cloneMethod = t.GetMethods(Flags)
+                    .FirstOrDefault(m => m.GetParameters().Length == 0 &&
+                                         (string.Equals(m.Name, "clone", StringComparison.OrdinalIgnoreCase) ||
+                                          string.Equals(m.Name, "copy", StringComparison.OrdinalIgnoreCase)));
+                if (cloneMethod != null)
+                {
+                    var res = cloneMethod.Invoke(heroSpr, Array.Empty<object?>());
+                    if (res != null)
+                    {
+                        _log.Information("[HeroGhost] Sprite cloned via {Method}", cloneMethod.Name);
+                        return res;
+                    }
+                }
+
+                var copyFrom = t.GetMethods(Flags)
+                    .FirstOrDefault(m => string.Equals(m.Name, "copyFrom", StringComparison.OrdinalIgnoreCase) &&
+                                         m.GetParameters().Length == 1 &&
+                                         m.GetParameters()[0].ParameterType.IsInstanceOfType(heroSpr));
+                if (copyFrom != null)
+                {
+                    var target = Activator.CreateInstance(t);
+                    if (target != null)
+                    {
+                        copyFrom.Invoke(target, new[] { heroSpr });
+                        _log.Information("[HeroGhost] Sprite cloned via copyFrom");
+                        return target;
+                    }
+                }
+
+                var memberwise = t.GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (memberwise != null)
+                {
+                    var res = memberwise.Invoke(heroSpr, null);
+                    if (res != null)
+                    {
+                        _log.Information("[HeroGhost] Sprite cloned via MemberwiseClone");
+                        return res;
+                    }
+                }
+            }
+            catch (Exception ex) { LogCatch(ex, "TryCloneSprite"); }
+
+            return null;
+        }
+
+        private object? TryCreateSpriteLikeHero(object heroSpr)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            try
+            {
+                var sprType = heroSpr.GetType();
+                var lib = TryGetFieldOrProp(heroSpr, "lib", Flags);
+                var groupObj = TryGetFieldOrProp(heroSpr, "groupName", Flags) ?? TryGetFieldOrProp(heroSpr, "group", Flags) ?? TryGetFieldOrProp(heroSpr, "name", Flags);
+                var ctorMatch = sprType.GetConstructors(Flags)
+                    .OrderBy(c => c.GetParameters().Length)
+                    .FirstOrDefault(c =>
+                    {
+                        var ps = c.GetParameters();
+                        if (ps.Length == 0) return true;
+                        if (ps.Length == 2 && lib != null && ps[0].ParameterType.IsInstanceOfType(lib) && ps[1].ParameterType == typeof(string)) return true;
+                        if (ps.Length == 1 && lib != null && ps[0].ParameterType.IsInstanceOfType(lib)) return true;
+                        return false;
+                    });
+
+                object? sprInstance = null;
+                if (ctorMatch != null)
+                {
+                    var ps = ctorMatch.GetParameters();
+                    var args = new object?[ps.Length];
+                    for (int i = 0; i < ps.Length; i++)
+                    {
+                        if (lib != null && ps[i].ParameterType.IsInstanceOfType(lib))
+                            args[i] = lib;
+                        else if (ps[i].ParameterType == typeof(string))
+                            args[i] = groupObj?.ToString() ?? "hero";
+                        else
+                            args[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
+                    }
+                    sprInstance = ctorMatch.Invoke(args);
+                    if (sprInstance != null)
+                        _log.Information("[HeroGhost] Sprite created via ctor {Ctor}", ctorMatch.ToString());
+                }
+                else
+                {
+                    sprInstance = Activator.CreateInstance(sprType);
+                    if (sprInstance != null)
+                        _log.Information("[HeroGhost] Sprite created via default ctor");
+                }
+
+                if (sprInstance != null)
+                {
+                    if (lib != null)
+                        TrySetFieldOrProp(sprInstance, "lib", lib, Flags);
+                    if (groupObj != null)
+                        TrySetFieldOrProp(sprInstance, "groupName", groupObj, Flags);
+                }
+
+                return sprInstance;
+            }
+            catch (Exception ex) { LogCatch(ex, "TryCreateSpriteLikeHero"); return null; }
+        }
+
+        private void AssignSpriteToGhost(object ghost, object sprite)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            var t = ghost.GetType();
+            var applied = false;
+
+            foreach (var name in new[] { "sprite", "spr" })
+            {
+                try
+                {
+                    var f = t.GetField(name, Flags);
+                    if (f != null && f.FieldType.IsInstanceOfType(sprite))
+                    {
+                        f.SetValue(ghost, sprite);
+                        applied = true;
+                        _log.Information("[HeroGhost] Assigned sprite via field {Field}", name);
+                        break;
+                    }
+                    var p = t.GetProperty(name, Flags);
+                    if (p?.CanWrite == true && p.PropertyType.IsInstanceOfType(sprite))
+                    {
+                        p.SetValue(ghost, sprite);
+                        applied = true;
+                        _log.Information("[HeroGhost] Assigned sprite via property {Property}", name);
+                        break;
+                    }
+                }
+                catch (Exception ex) { LogCatch(ex, "AssignSpriteToGhost"); }
+            }
+
+            if (!applied)
+            {
+                try
+                {
+                    var setter = t.GetMethods(Flags)
+                        .FirstOrDefault(m => (m.Name == "set_sprite" || m.Name == "set_spr") &&
+                                             m.GetParameters().Length == 1 &&
+                                             m.GetParameters()[0].ParameterType.IsInstanceOfType(sprite));
+                    if (setter != null)
+                    {
+                        setter.Invoke(ghost, new[] { sprite });
+                        applied = true;
+                        _log.Information("[HeroGhost] Assigned sprite via setter {Setter}", setter.Name);
+                    }
+                }
+                catch (Exception ex) { LogCatch(ex, "AssignSpriteToGhost"); }
+            }
+
+            if (!applied)
+                _log.Warning("[HeroGhost] Failed to assign sprite to ghost type {Type}", t.FullName);
+        }
+
+
 
         public void Reset()
         {
             _ghost = null;
             _levelRef = null;
             _gameRef = null;
+            _heroSourceRef = null;
+            _heroShaderSnapshot = null;
+            _heroShaderListSnapshot = null;
             _setPosCase = null;
             _setPos = null;
             _safeTpTo = null;
@@ -363,6 +1420,8 @@ namespace DeadCellsMultiplayerMod
         {
             string[] candidates =
             {
+                "dc.en.Mob",
+                "dc.en.Active",
                 "dc.en.Entity",
                 "dc.Entity",
                 "en.Entity"
@@ -511,6 +1570,9 @@ namespace DeadCellsMultiplayerMod
             // Fallback to alternate entity classes if the current one failed
             var fallbackNames = new[]
             {
+                DefaultEntityType,
+                "dc.en.Mob",
+                "dc.en.Entity",
                 "dc.Entity",
                 "en.Entity"
             };
@@ -623,6 +1685,94 @@ namespace DeadCellsMultiplayerMod
             }
 
             return success;
+        }
+
+        private bool TryTeleportLike(object ghost, int cx, int cy, double xr, double yr)
+        {
+            const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            var names = new[] { "safeTpTo", "teleportTo", "teleport", "tpTo" };
+
+            foreach (var name in names)
+            {
+                var methods = ghost.GetType().GetMethods(Flags)
+                    .Where(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
+
+                foreach (var m in methods.OrderBy(m => m.GetParameters().Length))
+                {
+                    var args = BuildTeleportArgs(m.GetParameters(), cx, cy, xr, yr);
+                    if (args == null) continue;
+
+                    try
+                    {
+                        m.Invoke(ghost, args);
+                        return true;
+                    }
+                    catch (Exception ex) { LogCatch(ex, "TryTeleportLike"); }
+                }
+            }
+
+            return false;
+        }
+
+        private object?[]? BuildTeleportArgs(ParameterInfo[] ps, int cx, int cy, double xr, double yr)
+        {
+            try
+            {
+                if (ps.Length == 2 &&
+                    IsNumericAssignable(ps[0].ParameterType, cx) &&
+                    IsNumericAssignable(ps[1].ParameterType, cy))
+                {
+                    return new object?[]
+                    {
+                        Convert.ChangeType(cx, ps[0].ParameterType),
+                        Convert.ChangeType(cy, ps[1].ParameterType)
+                    };
+                }
+
+                if (ps.Length == 3 &&
+                    IsNumericAssignable(ps[0].ParameterType, cx) &&
+                    IsNumericAssignable(ps[1].ParameterType, cy))
+                {
+                    if (IsNumericAssignable(ps[2].ParameterType, xr))
+                        return new object?[]
+                        {
+                            Convert.ChangeType(cx, ps[0].ParameterType),
+                            Convert.ChangeType(cy, ps[1].ParameterType),
+                            Convert.ChangeType(xr, ps[2].ParameterType)
+                        };
+
+                    if (IsNumericAssignable(ps[2].ParameterType, yr))
+                        return new object?[]
+                        {
+                            Convert.ChangeType(cx, ps[0].ParameterType),
+                            Convert.ChangeType(cy, ps[1].ParameterType),
+                            Convert.ChangeType(yr, ps[2].ParameterType)
+                        };
+                }
+
+                if (ps.Length >= 4 &&
+                    IsNumericAssignable(ps[0].ParameterType, cx) &&
+                    IsNumericAssignable(ps[1].ParameterType, cy) &&
+                    IsNumericAssignable(ps[2].ParameterType, xr) &&
+                    IsNumericAssignable(ps[3].ParameterType, yr))
+                {
+                    var args = new object?[ps.Length];
+                    args[0] = Convert.ChangeType(cx, ps[0].ParameterType);
+                    args[1] = Convert.ChangeType(cy, ps[1].ParameterType);
+                    args[2] = Convert.ChangeType(xr, ps[2].ParameterType);
+                    args[3] = Convert.ChangeType(yr, ps[3].ParameterType);
+                    for (int i = 4; i < ps.Length; i++)
+                    {
+                        args[i] = ps[i].HasDefaultValue
+                            ? ps[i].DefaultValue
+                            : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
+                    }
+                    return args;
+                }
+            }
+            catch (Exception ex) { LogCatch(ex, "BuildTeleportArgs"); }
+
+            return null;
         }
 
         private void EnsureContextFields(object ghost, object levelObj, object gameObj)
@@ -1007,16 +2157,66 @@ namespace DeadCellsMultiplayerMod
                     }
                 }
 
-                var initOk = TryInitSpriteFromHero(heroRef, ghost);
-                if (initOk)
+                var heroSpr = TryGetFieldOrProp(heroRef, "sprite", Flags) ?? TryGetFieldOrProp(heroRef, "spr", Flags);
+                if (heroSpr != null)
                 {
+                    _heroShaderListSnapshot = CloneShaderList(TryGetFieldOrProp(heroSpr, "shaders", Flags), Flags);
+                    if (_heroShaderListSnapshot != null)
+                    {
+                        var count = CountShaderList(_heroShaderListSnapshot, Flags);
+                        _log.Information("[HeroGhost] Captured hero shader list snapshot (count={Count})", count);
+                    }
+                }
+                _heroShaderSnapshot = TryGetFieldOrProp(heroSpr, "shader", Flags)
+                                       ?? TryGetFieldOrProp(heroSpr, "mat", Flags)
+                                       ?? TryGetFieldOrProp(heroSpr, "material", Flags);
+                if (_heroShaderSnapshot != null)
+                    _log.Information("[HeroGhost] Captured hero shader snapshot ({Type})", _heroShaderSnapshot.GetType().FullName);
+
+                var initOk = TryInitSpriteFromHero(heroRef, ghost);
+
+                object? ghostSpr = TryGetFieldOrProp(ghost, "sprite", Flags) ?? TryGetFieldOrProp(ghost, "spr", Flags);
+
+                if (heroSpr != null && ghostSpr == null)
+                {
+                    // Prefer cloning to keep shader/material info; fall back to construct.
+                    var cloned = TryCloneSprite(heroSpr);
+                    if (cloned != null)
+                    {
+                        AssignSpriteToGhost(ghost, cloned);
+                        _log.Information("[HeroGhost] Cloned hero sprite onto ghost");
+                    }
+                    else
+                    {
+                        var created = TryCreateSpriteLikeHero(heroSpr);
+                        if (created != null)
+                        {
+                            AssignSpriteToGhost(ghost, created);
+                            _log.Information("[HeroGhost] Created new sprite like hero");
+                        }
+                    }
+
+                    ghostSpr = TryGetFieldOrProp(ghost, "sprite", Flags) ?? TryGetFieldOrProp(ghost, "spr", Flags);
+                }
+
+                if (initOk && heroSpr != null && ghostSpr != null)
+                {
+                    if (_heroShaderSnapshot != null && TryGetFieldOrProp(ghostSpr, "shader", Flags) == null)
+                    {
+                        ApplyShaderSetter(ghostSpr, _heroShaderSnapshot, Flags);
+                        _log.Information("[HeroGhost] Applied shader snapshot pre-init ({Type})", _heroShaderSnapshot.GetType().FullName);
+                        _heroShaderSnapshot = null;
+                    }
+
+                    TryCopyShaderAndMaterial(heroSpr, ghostSpr);
+                    TryCopySpriteAppearance(heroSpr, ghostSpr);
+                    CopySpriteAllFields(heroSpr, ghostSpr);
                     TrySyncSpriteFrame(heroRef, ghost);
                 }
                 TryApplyNormal(heroRef, ghost);
 
                 // spriteUpdate only if sprite exists
-                var hasSprite = TryGetFieldOrProp(ghost, "sprite", Flags) ?? TryGetFieldOrProp(ghost, "spr", Flags);
-                if (hasSprite != null)
+                if (ghostSpr != null)
                 {
                     var spriteUpdate = ghost.GetType().GetMethod("spriteUpdate", Flags, binder: null, types: Type.EmptyTypes, modifiers: null);
                     if (spriteUpdate != null)

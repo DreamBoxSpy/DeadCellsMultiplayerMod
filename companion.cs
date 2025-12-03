@@ -16,12 +16,10 @@ namespace DeadCellsMultiplayerMod
         private readonly HeroGhost _ghost;
         private static readonly string[] PreferredEntityTypes =
         {
-            // Prefer real hero class to keep full body/animations
-            "en.Hero",
-            "dc.en.Hero",
-            "dc.en.hero.Beheaded",
-            "dc.en.mob.BootlegHomunculus",
-            "dc.en.mob._BootlegHomunculus"
+            "dc.en.Entity",
+            "dc.Entity",
+            "dc.en.Mob",
+            "dc.en.Active"
         };
 
         private object? _lastLevelRef;
