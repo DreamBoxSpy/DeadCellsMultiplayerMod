@@ -8,10 +8,13 @@ using ModCore.Events.Interfaces.Game.Save;
 using Serilog;
 using System.Net;
 using System.Reflection;
+using dc.en;
+using dc.pr;
+
 
 namespace DeadCellsMultiplayerMod
 {
-    public class ModEntry(ModInfo info) : ModBase(info),
+    public partial class ModEntry(ModInfo info) : ModBase(info),
         IOnGameEndInit,
         IOnHeroInit,
         IOnHeroUpdate,
@@ -27,35 +30,88 @@ namespace DeadCellsMultiplayerMod
         private object? _lastLevelRef;
         private object? _lastGameRef;
 
-        private CompanionController? _companion;
+        
+
 
         private NetRole _netRole = NetRole.None;
         private NetNode? _net;
 
-        private int _lastSentCx = int.MinValue;
-        private int _lastSentCy = int.MinValue;
-        private double _lastSentXr = double.NaN;
-        private double _lastSentYr = double.NaN;
+        private static int _beheadedWakeCounter;
 
-        private double _accum;
         private bool _initialGhostSpawned;
-        private double _ghostLogAccum;
-        private const double GhostLogInterval = 5.0;
-        public override void Initialize()
-        {
-            Instance = this;
-            Logger.Information("[NetMod] Initialized");
-            GameMenu.Initialize(Logger);
-        }
+
+        public bool isHeroSpawned=false;
+        public dc.pr.Game? game;
+
+        public Hero _companion = null;
+        Hero me = null;
+
+        int cnt=0;
+        int players_count = 2;
+
+        private GhostHero? _ghost;
 
         public void OnGameEndInit()
         {
             _ready = true;
+            _beheadedWakeCounter = 0;
             GameMenu.AllowGameDataHooks = false;
             GameMenu.SetRole(NetRole.None);
             var seed = GameMenu.ForceGenerateServerSeed("OnGameEndInit");
             Logger.Information("[NetMod] GameEndInit - ready (use menu) seed={Seed}", seed);
         }
+
+        public override void Initialize()
+        {
+            Instance = this;
+            GameMenu.Initialize(Logger);
+            Hook_Game.init += Hook_mygameinit;
+            Logger.Debug("[NetMod] Hook_mygameinit attached");
+            Hook_Hero.wakeup += hook_hero_wakeup;
+            Logger.Debug("[NetMod] Hook_Hero.wakeup attached");
+            Hook_Hero.onLevelChanged += hook_level_changed;
+            Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
+        }
+
+        public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
+        {
+            orig(self, oldLevel);
+            if(_netRole == NetRole.None) return;
+            if(oldLevel != null){
+                Logger.Debug($"[NetMod] hook_level_changed logic for change level in ghost");
+            }
+            Logger.Debug($"[NetMod] hook_level_changed.old_level = {oldLevel}");
+        }
+
+
+        public void hook_hero_wakeup(Hook_Hero.orig_wakeup orig, Hero self, Level lvl, int cx, int cy)
+        {
+            if (cnt == 0)
+                me = self;
+
+            orig(self, lvl, cx, cy);
+            if(_netRole == NetRole.None) return;
+
+            cnt++;
+
+            if (cnt < players_count && game != null && me != null)
+            {
+                _ghost ??= new GhostHero(game, me);
+                _companion = _ghost.CreateGhost();
+                Logger.Debug($"[NetMod] Hook_Hero.wakeup created ghost = {_companion}");
+            }
+
+            if (cnt >= players_count)
+                cnt = 0;
+        }
+
+
+        public void Hook_mygameinit(Hook_Game.orig_init orig, dc.pr.Game self)
+        {
+            game = self;
+            orig(self);
+        }
+
 
 
         public void OnAfterLoadingSave(dc.User data)
@@ -81,28 +137,45 @@ namespace DeadCellsMultiplayerMod
             GameMenu.MarkInRun();
             try
             {
-                var gm = Game.Instance;
-                _heroRef = gm?.HeroInstance;
-                _lastGameRef = gm;
+                object? gmObj = game ?? (object?)ModCore.Modules.Game.Instance;
+                if (gmObj == null)
+                {
+                    Logger.Warning("[NetMod] OnHeroInit: game instance is null");
+                    return;
+                }
+
+                try
+                {
+                    dynamic gmDyn = gmObj;
+                    _heroRef = gmDyn.hero;
+                }
+                catch
+                {
+                    _heroRef = null;
+                }
+
+                _lastGameRef = gmObj;
                 _initialGhostSpawned = false;
-                _companion = new CompanionController(Logger);
 
                 if (_heroRef != null)
                 {
                     string? heroTypeStr = null;
+                    object? heroTeam = null;
                     try
                     {
                         dynamic h = DynamicAccessUtils.AsDynamic(_heroRef);
                         try { heroTypeStr = (string?)h.type; } catch { }
+                        try { heroTeam = (object?)h.team; } catch { }
                         try { _lastLevelRef = (object?)h._level; } catch { }
                         
-                        // Получаем game из уровня или используем Game.Instance
-                        _lastGameRef = ExtractGameFromLevel(_lastLevelRef) ?? Game.Instance ?? _lastGameRef;
+                        _lastGameRef = ExtractGameFromLevel(_lastLevelRef) ?? gmObj ?? _lastGameRef;
                     }
                     catch { }
 
                     heroTypeStr ??= _heroRef.GetType().FullName;
-                    Logger.Information("[NetMod] Hero captured (type={Type})", heroTypeStr ?? "unknown");
+                    Logger.Information("[NetMod] Hero captured (type={Type}, team={Team})",
+                        heroTypeStr ?? "unknown",
+                        heroTeam ?? "unknown");
                     TryInitialGhostSpawn();
                 }
                 else
@@ -116,91 +189,9 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
-        public void OnHeroUpdate(double dt)
-        {
-            if (!_ready || _heroRef == null) return;
 
-            var gm = Game.Instance;
-            if (gm != null)
-                _lastGameRef = gm;
 
-            _accum += dt;
-            if (_accum < 0.1) return;
-            _accum = 0;
-
-            int cx = 0, cy = 0;
-            double xr = 0, yr = 0;
-            object? levelObj = null;
-
-            try
-            {
-                dynamic hero = DynamicAccessUtils.AsDynamic(_heroRef);
-                cx = (int)hero.cx;
-                cy = (int)hero.cy;
-                xr = hero.xr;
-                yr = hero.yr;
-
-                levelObj = (object?)hero._level;
-                if (!ReferenceEquals(levelObj, _lastLevelRef))
-                {
-                    _lastLevelRef = levelObj;
-                    _companion?.ResetSpawnState();
-                    _initialGhostSpawned = false;
-                    Logger.Information("[NetMod] Level changed -> reset ghost");
-                }
-
-                var gameObj = ExtractGameFromLevel(levelObj) ?? Game.Instance;
-                if (gameObj != null)
-                    _lastGameRef = gameObj;
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning($"[NetMod] OnHeroUpdate error: {ex.Message}");
-                return;
-            }
-
-            TryInitialGhostSpawn();
-            _ghostLogAccum += dt;
-            if (_companion != null && _ghostLogAccum >= GhostLogInterval)
-            {
-                _ghostLogAccum = 0;
-                _companion.TryLogGhostPosition();
-            }
-
-            if (_net != null && _net.IsAlive && _netRole != NetRole.None)
-            {
-                if (cx != _lastSentCx || cy != _lastSentCy || xr != _lastSentXr || yr != _lastSentYr)
-                {
-                    _lastSentCx = cx;
-                    _lastSentCy = cy;
-                    _lastSentXr = xr;
-                    _lastSentYr = yr;
-                    _net.TickSend(cx, cy, xr, yr);
-                }
-            }
-
-            if (_net == null || !_net.IsAlive || _netRole == NetRole.None) return;
-            if (!_net.TryGetRemote(out var rcx, out var rcy, out var rxr, out var ryr)) return;
-            if (rcx < 0 || rcy < 0) return;
-
-            _companion ??= new CompanionController(Logger);
-
-            if (!_companion.IsSpawned)
-            {
-                if (_lastLevelRef != null && _lastGameRef != null && _heroRef != null)
-                    _companion.EnsureSpawned(_heroRef, _lastLevelRef, _lastGameRef, cx, cy);
-            }
-
-            _companion?.TeleportTo(rcx, rcy, rxr, ryr);
-        }
-
-        public static void OnClientReceiveGameData(byte[] bytes)
-        {
-            _pendingGameData = bytes;
-            Log.Information("[NetMod] Client received GameData blob ({0} bytes)", bytes.Length);
-            GameMenu.NotifyGameDataReceived();
-            ApplyGameDataBytes(bytes);
-        }
+       
 
         public static void ApplyGameDataBytes(byte[] data)
         {
@@ -228,15 +219,58 @@ namespace DeadCellsMultiplayerMod
             }
         }
 
+        public static void OnClientReceiveGameData(byte[] bytes)
+        {
+            ApplyGameDataBytes(bytes);
+        }
 
-        // GameDataSync helpers removed (using full hxbit path)
+
 
         public void OnFrameUpdate(double dt)
         {
             if (!_ready) return;
-
             GameMenu.TickMenu(dt);
         }
+
+
+        public int last_cx, last_cy;
+
+        void IOnHeroUpdate.OnHeroUpdate(double dt)
+        {
+            SendHeroCoords();
+            ReceiveGhostCoords();
+        }
+
+
+        private void SendHeroCoords()
+        {
+            if (_netRole == NetRole.None) return;
+
+            var net = _net;
+            var hero = me;
+
+            if (net == null || hero == null || _companion == null) return;
+            if(hero.cx == last_cx && hero.cy == last_cy) return;
+
+            net.TickSend(hero.cx, hero.cy, hero.xr, hero.yr);
+            last_cx = hero.cx;
+            last_cy = hero.cy;
+
+        }
+
+        private void ReceiveGhostCoords()
+        {
+            var net = _net;
+            var ghost = _ghost;
+            if (net == null || ghost == null) return;
+
+            if (net.TryGetRemote(out var rcx, out var rcy, out var rxr, out var ryr))
+            {
+                ghost.Teleport(rcx, rcy, rxr, ryr);
+            }
+        }
+
+
 
         private IPEndPoint BuildEndpoint(string ipText, int port)
         {
@@ -345,13 +379,6 @@ namespace DeadCellsMultiplayerMod
                 try { yr = (double)h.yr; } catch { }
                 if (cx < 0 || cy < 0) return;
 
-                _companion ??= new CompanionController(Logger);
-                _companion.EnsureSpawned(_heroRef, _lastLevelRef, _lastGameRef, cx, cy);
-                if (_companion.IsSpawned)
-                {
-                    _initialGhostSpawned = true;
-                    Logger.Information("[NetMod] Initial ghost spawned at {Cx},{Cy}", cx, cy);
-                }
             }
             catch (Exception ex)
             {
