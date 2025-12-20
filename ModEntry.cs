@@ -10,7 +10,14 @@ using System.Net;
 using System.Reflection;
 using dc.en;
 using dc.pr;
+using ModCore.Storage;
 
+using dc.tool.mod.script;
+using dc.pow;
+using ModCore.Utitities;
+
+using dc.level;
+using dc;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -72,8 +79,23 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_Hero.wakeup attached");
             Hook_Hero.onLevelChanged += hook_level_changed;
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
+
+            Hook__LevelStruct.get += Hook__LevelStruct_get;
+
+
         }
 
+        
+        LevelStruct Hook__LevelStruct_get
+        (
+            Hook__LevelStruct.orig_get orig, dc.User user, 
+            Hashlink.Virtuals.virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ l, 
+            dc.libs.Rand rng
+        )
+        {  
+            
+            return orig(user, l, rng);
+        }
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
             orig(self, oldLevel);
@@ -81,8 +103,8 @@ namespace DeadCellsMultiplayerMod
             if (_netRole == NetRole.None) return;
             SendLevel();
             var remoteCurrentLevelId = _remoteLevelText;
+
             
-            Logger.Warning($"Hero level id = {self._level.uniqId}\n Ghost Level id = {remoteCurrentLevelId}");
 
             if (oldLevel != null && self._level.uniqId.ToString() == remoteCurrentLevelId)
             {
