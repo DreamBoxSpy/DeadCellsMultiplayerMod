@@ -24,8 +24,7 @@ namespace DeadCellsMultiplayerMod
         IOnHeroUpdate,
         IOnFrameUpdate,
         IOnAfterLoadingSave,
-        IOnZDoorEntering,
-        IOnZDoorEntry
+        IOnZDoorEntering
     {
         public static ModEntry? Instance { get; private set; }
         private static byte[]? _pendingGameData;
@@ -61,7 +60,7 @@ namespace DeadCellsMultiplayerMod
         private ZDoor zDoor;
         private string mapid;
         private int link;
-        
+
 
         public void OnGameEndInit()
         {
@@ -100,11 +99,6 @@ namespace DeadCellsMultiplayerMod
             Logger.Information($"HERO MapId:{mapid} LinkId:{link} {zDoor.cx},{zDoor.cy}");
         }
 
-        public void OnZDoorEntry()
-        {
-
-        }
-
         private void Hook_ZDoor_dispose(Hook_ZDoor.orig_dispose orig, ZDoor self)
         {
             EventSystem.BroadcastEvent<IOnZDoorEntry, ZDoor>(self);
@@ -113,59 +107,27 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook_ZDoor_enter(Hook_ZDoor.orig_enter orig, ZDoor self, Hero h)
         {
-            me = h;
-            EventSystem.BroadcastEvent<IOnZDoorEntering, ZDoor>(self);
+            {
+                me = h;
+                EventSystem.BroadcastEvent<IOnZDoorEntering, ZDoor>(self);
+            }
             orig(self, h);
-        }
-
-        public void ForceGhostEnterZDoor(int cx, int cy, string destMapId, int linkId)
-        {
-            if (_companion == null || game?.hero?._level == null) return;
-
-            zDoor = FindZDoorAtPosition(cx, cy);
-            var ghostHero = _companion as Hero;
-
-            if (zDoor != null && ghostHero != null)
-            {
-                zDoor.enter(ghostHero);
-                Logger.Debug($"[NetMod] Ghost entered ZDoor at ({cx},{cy})");
-            }
-            else
-            {
-                Logger.Warning($"[NetMod] ZDoor not found at ({cx},{cy})");
-            }
-        }
-
-        private ZDoor? FindZDoorAtPosition(int cx, int cy)
-        {
-            if (game?.hero?._level == null) return null;
-
-
-            var entities = game.hero._level.entities;
-            if (entities != null)
-            {
-                foreach (var entity in entities)
-                {
-                    if (entity is ZDoor zDoor && zDoor.cx == cx && zDoor.cy == cy)
-                    {
-                        return zDoor;
-                    }
-                }
-            }
-            return null;
         }
         // Zdore code end
     
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
+            me = self;
             orig(self, oldLevel);
 
             if (_netRole == NetRole.None) return;
-            SendLevel();
+            // SendLevel();
             var remoteCurrentLevelId = _remoteLevelText;
             if(oldLevel == null) return;
             if (zDoor == null) return;
-            ForceGhostEnterZDoor(zDoor.cx, zDoor.cy, mapid, link);
+            dc.cine.LevelTransition.Class.gotoSub(zDoor.destMap, zDoor.linkId);
+            dc.cine.LevelTransition.Class.gotoSub(zDoor.destMap, zDoor.linkId);
+            Logger.Warning($"Hero: {me.cx}:{me.cy}, \n Ghost: {_companion.cx}:{_companion.cy}");
         }
 
 
