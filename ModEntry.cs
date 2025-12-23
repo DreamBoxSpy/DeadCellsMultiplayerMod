@@ -14,6 +14,9 @@ using ModCore.Utitities;
 using ModCore.Events;
 
 using dc.en.inter;
+using dc.level;
+using dc.hl.types;
+using HaxeProxy.Runtime;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -56,7 +59,8 @@ namespace DeadCellsMultiplayerMod
         private GhostHero? _ghost;
 
         private ZDoor zDoor;
-        dc.level.LevelMap Map;
+        public static dc.level.LevelMap Map;
+
         private int? link;
 
 
@@ -84,33 +88,81 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
             Hook__LevelTransition.gotoSub += hook_gotosub;
             Logger.Debug("[NetMod] Hook__LevelTransition.gotoSub attached");
-
+            Hook_ZDoor.enter += Hook_ZDoor_enter;
+            Hook_LevelTransition.loadNewLevel += Hook__LevelTransition_loadnewlevel;
+            Hook_Game.initHero += Hook_Game_inithero;
+            Hook_Game.activateSubLevel += hook_game_activateSubLevel;
+            Hook__AfterZDoor.__constructor__ += Hook__AfterZDoor_intcompanion;
         }
+
+        private void Hook__AfterZDoor_intcompanion(Hook__AfterZDoor.orig___constructor__ orig, AfterZDoor arg1, Hero hero)
+        {
+            Level level = _companion.set_level(hero._level);
+            hero.wakeup(level, hero.cx, hero.cy);
+            orig(arg1, hero);
+        }
+
+        private void hook_game_activateSubLevel(Hook_Game.orig_activateSubLevel orig, Game self, LevelMap linkId, int? shouldSave, Ref<bool> outAnim, Ref<bool> shouldSave2)
+        {
+
+            orig(self, linkId, shouldSave, outAnim, shouldSave2);
+        }
+
+        private Hero Hook_Game_inithero(Hook_Game.orig_initHero orig, Game self, Level cx, int cy, int from, UsableBody fromDeadBody, bool oldLevel, Level e)
+        {
+            return orig(self, cx, cy, from, fromDeadBody, oldLevel, e);
+        }
+
+        private void Hook__LevelTransition_loadnewlevel(Hook_LevelTransition.orig_loadNewLevel orig, LevelTransition self)
+        {
+            orig(self);
+        }
+
+
+        private void Hook_ZDoor_enter(Hook_ZDoor.orig_enter orig, ZDoor self, Hero h)
+        {
+            HlAction onComplete = new HlAction(() =>
+            {
+                var game = Game.Class.ME;
+                game.subLevels = me._level.game.subLevels = _companion._level.game.subLevels;
+                _LevelTransition levelTransition = LevelTransition.Class;
+                if (me._level.map == _companion._level.map)
+                {
+                    self.destMap = self.destMap;
+                }
+                levelTransition.gotoSub(self.destMap, self.linkId);
+            });
+            UseZDoor useZDoor = new UseZDoor(_companion, self, onComplete);
+            UseZDoor useZDoor2 = new UseZDoor(me, self, onComplete);
+        }
+
+
 
 
         public LevelTransition hook_gotosub(Hook__LevelTransition.orig_gotoSub orig, dc.level.LevelMap map, int? linkId)
         {
             Map = map;
             link = linkId;
-
-
-            Logger.Debug($"[NetMod] map = {map.id}");
-
+            if (map != null && zDoor != null)
+            {
+                Logger.Debug($"[NetMod] map = {map.id}");
+            }
             return orig(map, linkId);
         }
 
-        
 
-    
+
+
+
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
             me = self;
             orig(self, oldLevel);
 
             if (_netRole == NetRole.None) return;
-            // SendLevel();
+            SendLevel();
             var remoteCurrentLevelId = _remoteLevelText;
-            if(oldLevel == null) return;
+            if (oldLevel == null) return;
             if (zDoor == null) return;
             Logger.Warning($"Hero: {me.cx}:{me.cy}, \n Ghost: {_companion.cx}:{_companion.cy}");
         }
@@ -270,10 +322,11 @@ namespace DeadCellsMultiplayerMod
 
 
         public int last_cx, last_cy;
+        private bool mapswitch = false;
 
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
-            if(_companion == null) return;
+            if (_companion == null) return;
             _ghost.Teleport(me.cx + 5, me.cy, me.xr, me.yr);
             SendHeroCoords();
             ReceiveGhostCoords();
@@ -461,6 +514,7 @@ namespace DeadCellsMultiplayerMod
 
             return null;
         }
+
 
     }
 }
