@@ -6,6 +6,7 @@ using dc.level;
 using HaxeProxy.Runtime;
 using dc.tool;
 using System.Text.Json.Nodes;
+using dc.en;
 
 
 namespace DeadCellsMultiplayerMod
@@ -14,6 +15,8 @@ namespace DeadCellsMultiplayerMod
     {
         static Serilog.ILogger _log;
 
+
+        static public int seed;
 
         public GameDataSync(Serilog.ILogger log)
         {
@@ -32,7 +35,7 @@ namespace DeadCellsMultiplayerMod
         {
             isCustom = false;
             mode = false;
-            var seed = lvl;
+            seed = lvl;
             var net = GameMenu.NetRef;
             if (net != null && net.IsHost)
             {
@@ -48,6 +51,16 @@ namespace DeadCellsMultiplayerMod
             }
             lvl = seed;
             orig(self, lvl, isTwitch, isCustom, mode, gdata);
+        }
+
+        public static ArrayObj hook_generate(Hook_LevelGen.orig_generate orig, 
+        LevelGen self, 
+        User seed, 
+        int ldat, 
+        virtual_baseLootLevel_biome_bonusTripleScrollAfterBC_cellBonus_dlc_doubleUps_eliteRoomChance_eliteWanderChance_flagsProps_group_icon_id_index_loreDescriptions_mapDepth_minGold_mobDensity_mobs_name_nextLevels_parallax_props_quarterUpsBC3_quarterUpsBC4_specificLoots_specificSubBiome_transitionTo_tripleUps_worldDepth_ resetCount, 
+        Ref<bool> resetCount2)
+        {
+            return orig(self, seed, ldat, resetCount, resetCount2);
         }
     }
 }

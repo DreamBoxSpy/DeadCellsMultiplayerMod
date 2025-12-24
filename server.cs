@@ -262,7 +262,6 @@ public sealed class NetNode : IDisposable
                             _hasRemote = true;
                             _remoteLevelText = payload;
                         }
-                        _log.Information("[NetNode] Received level payload {Level}", payload);
                         continue;
                     }
 
@@ -398,7 +397,6 @@ public sealed class NetNode : IDisposable
 
         var safe = levelId.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
         SendRaw("LEVEL|" + safe);
-        _log.Information("[NetNode] Sent level payload {Level}", safe);
     }
 
     public void SendKick()
@@ -439,6 +437,7 @@ public sealed class NetNode : IDisposable
         try { _stream?.Close(); } catch { }
         try { _client?.Close(); } catch { }
         try { _listener?.Stop(); } catch { }
+        GameDataSync.seed = 0;
         _stream = null; _client = null; _listener = null;
         try { _sendLock.Dispose(); } catch { }
     }
