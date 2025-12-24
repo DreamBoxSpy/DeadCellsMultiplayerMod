@@ -43,9 +43,12 @@ namespace DeadCellsMultiplayerMod
             _companion.set_team(_me._team);
             SetLabel("TEST");
             _companion.initGfx();
+            HeroHead hh = _companion.createHead();
+            _companion.heroHead = hh;
+            _companion.heroHead.initHead(_companion._level, 1);
             _companion.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             _companion.visible = true;
-            // _companion.initAnims();
+            _companion.initAnims();
             _companion.wakeup(_me._level, _me.cx, _me.cy);
             DisableHero(_companion);
             
@@ -73,6 +76,11 @@ namespace DeadCellsMultiplayerMod
         public void Teleport(int x, int y, double? xr, double? yr)
         {
             _companion?.setPosCase(x, y, xr, yr);
+        }
+
+        public void TeleportByPixels(double x, double y)
+        {
+            _companion?.setPosPixel(x, y);
         }
 
         public void SetLabel(string? text, int? color = null)
