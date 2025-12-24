@@ -11,6 +11,7 @@ using ModCore.Mods;
 using ModCore.Utitities;
 using Serilog.Core;
 using Serilog;
+using dc.tool;
 
 
 namespace DeadCellsMultiplayerMod
@@ -44,27 +45,34 @@ namespace DeadCellsMultiplayerMod
             _companion.initGfx();
             _companion.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             _companion.visible = true;
-            _companion.initAnims();
+            // _companion.initAnims();
             _companion.wakeup(_me._level, _me.cx, _me.cy);
-            _companion.awake = false;
-            bool disposeFlagValue = false;
-            var disposeFlag = new Ref<bool>(ref disposeFlagValue);
-
-            _companion.controller?.dispose(disposeFlag);
-            _companion.mainSkillsManager.dispose();
-            _companion.activeSkillsManager.dispose();
+            DisableHero(_companion);
+            
+            // _companion.activeSkillsManager.dispose();
 
             return _companion;
+        }
+
+        public void ReinitGFX(Hero h)
+        {
+            h.disposeGfx();
+            h.initGfx();
+        }
+        public void DisableHero(Hero h)
+        {
+            if(h == null) return;
+            bool disposeFlagValue = false;
+            var disposeFlag = new Ref<bool>(ref disposeFlagValue);
+            h.controller?.dispose(disposeFlag);
+            h.mainSkillsManager.dispose();
+            h.awake = false;
+
         }
 
         public void Teleport(int x, int y, double? xr, double? yr)
         {
             _companion?.setPosCase(x, y, xr, yr);
-        }
-
-        public void SetLevel(Level lvl)
-        {
-            _companion?.set_level(lvl);
         }
 
         public void SetLabel(string? text, int? color = null)
@@ -77,8 +85,8 @@ namespace DeadCellsMultiplayerMod
 
             var text1 = new dc.ui.Text(
                 _companion.heroHead.parent,
-                null,
-                null,
+                true,
+                false,
                 Ref<double>.Null,
                 new dc.ui.ImageVerticalAlign.Middle(),
                 null);
