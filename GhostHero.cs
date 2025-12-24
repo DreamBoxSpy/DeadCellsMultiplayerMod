@@ -3,6 +3,7 @@ using System.Reflection;
 using dc.en;
 using dc.en.hero;
 using dc.haxe;
+using dc.level;
 using dc.pr;
 using dc.tool.heroHeads;
 using HaxeProxy.Runtime;
@@ -32,24 +33,21 @@ namespace DeadCellsMultiplayerMod
 
         public Hero? Companion => _companion;
 
-        public Hero CreateGhost()
+        public Hero? CreateGhost(Level level)
         {
+            if (level == null) return null;
             _companion = Hero.Class.create(_game, "Beheaded".AsHaxeString());
-            _companion.heroHead = _me.heroHead;
             _companion.init();
             _companion.awake = false;
 
-            _companion.set_level(_me._level);
+            _companion.set_level(level);
             _companion.set_team(_me._team);
             SetLabel("TEST");
             _companion.initGfx();
-            HeroHead hh = _companion.createHead();
-            _companion.heroHead = hh;
-            _companion.heroHead.initHead(_companion._level, 1);
             _companion.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             _companion.visible = true;
             _companion.initAnims();
-            _companion.wakeup(_me._level, _me.cx, _me.cy);
+            _companion.wakeup(level, _me.cx, _me.cy);
             DisableHero(_companion);
             
             // _companion.activeSkillsManager.dispose();
