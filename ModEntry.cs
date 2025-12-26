@@ -42,19 +42,14 @@ namespace DeadCellsMultiplayerMod
 
         public dc.pr.Game? game;
 
-        public static Hero _companion = null;
         public static KingSkin _companionKing = null;
         static Hero me = null;
-
-        int players_count = 2;
-
         private static GhostHero? _ghost;
         private bool _ghostPending;
 
         private GameDataSync gds;
 
 
-        public Hero[] heroes = Array.Empty<Hero>();
 
         public static string roomsMap;
 
@@ -76,20 +71,20 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_mygameinit attached");
             Hook_Hero.wakeup += hook_hero_wakeup;
             Logger.Debug("[NetMod] Hook_Hero.wakeup attached");
-            // Hook_Hero.onLevelChanged += hook_level_changed;
-            // Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
+            Hook_Hero.onLevelChanged += hook_level_changed;
+            Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
             Hook__LevelTransition.gotoSub += hook_gotosub;
             Logger.Debug("[NetMod] Hook__LevelTransition.gotoSub attached");
-            Hook_ZDoor.enter += Hook_ZDoor_enter;
-            Logger.Debug("[NetMod] Hook_ZDoor.ente attached");
-            Hook_LevelTransition.loadNewLevel += Hook__LevelTransition_loadnewlevel;
-            Logger.Debug("[NetMod] Hook_LevelTransition.loadNewLevel attached");
+            // Hook_ZDoor.enter += Hook_ZDoor_enter;
+            // Logger.Debug("[NetMod] Hook_ZDoor.enter attached");
+            // Hook_LevelTransition.loadNewLevel += Hook__LevelTransition_loadnewlevel;
+            // Logger.Debug("[NetMod] Hook_LevelTransition.loadNewLevel attached");
             Hook_Game.initHero += Hook_Game_inithero;
             Logger.Debug("[NetMod] Hook_Game.initHero attached");
             Hook_Game.activateSubLevel += hook_game_activateSubLevel;
             Logger.Debug("[NetMod] Hook_Game.activateSubLevel attached");
-            Hook__AfterZDoor.__constructor__ += Hook__AfterZDoor_intcompanion;
-            Logger.Debug("[NetMod] Hook__AfterZDoor.__constructor__ attached");
+            // Hook__AfterZDoor.__constructor__ += Hook__AfterZDoor_intcompanion;
+            // Logger.Debug("[NetMod] Hook__AfterZDoor.__constructor__ attached");
             Hook_User.newGame += GameDataSync.user_hook_new_game;
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
@@ -99,7 +94,7 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook__AfterZDoor_intcompanion(Hook__AfterZDoor.orig___constructor__ orig, AfterZDoor arg1, Hero hero)
         {
-            hero = heroes[0];
+            me = hero;
             orig(arg1, hero);
         }
 
@@ -121,22 +116,22 @@ namespace DeadCellsMultiplayerMod
         }
 
 
-        private void Hook_ZDoor_enter(Hook_ZDoor.orig_enter orig, ZDoor self, Hero h)
-        {
-            HlAction onComplete = new HlAction(() =>
-            {
-                var game = Game.Class.ME;
-                game.subLevels = me._level.game.subLevels = _companion._level.game.subLevels;
-                _LevelTransition levelTransition = LevelTransition.Class;
-                if (me._level.map == _companion._level.map)
-                {
-                    self.destMap = self.destMap;
-                }
-                levelTransition.gotoSub(self.destMap, self.linkId);
-            });
-            UseZDoor useZDoor = new UseZDoor(_companion, self, onComplete);
-            UseZDoor useZDoor2 = new UseZDoor(me, self, onComplete);
-        }
+        // private void Hook_ZDoor_enter(Hook_ZDoor.orig_enter orig, ZDoor self, Hero h)
+        // {
+        //     HlAction onComplete = new HlAction(() =>
+        //     {
+        //         var game = Game.Class.ME;
+        //         game.subLevels = me._level.game.subLevels = _companion._level.game.subLevels;
+        //         _LevelTransition levelTransition = LevelTransition.Class;
+        //         if (me._level.map == _companion._level.map)
+        //         {
+        //             self.destMap = self.destMap;
+        //         }
+        //         levelTransition.gotoSub(self.destMap, self.linkId);
+        //     });
+        //     UseZDoor useZDoor = new UseZDoor(_companion, self, onComplete);
+        //     UseZDoor useZDoor2 = new UseZDoor(me, self, onComplete);
+        // }
 
 
 
@@ -152,31 +147,21 @@ namespace DeadCellsMultiplayerMod
 
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
-            self = heroes[0];
+            me = self;
             orig(self, oldLevel);
-            if(_netRole != NetRole.None) _companion.awake = false;
+            if(_ghost == null) _ghost = new GhostHero(game, self);
+            if(_companionKing == null)
+            {
+                _companionKing = _ghost.CreateGhostKing(me._level);
+            }
+            else _companionKing.set_level(me._level);
         }
 
 
         public void hook_hero_wakeup(Hook_Hero.orig_wakeup orig, Hero self, Level lvl, int cx, int cy)
         {
-            // if (Array.IndexOf(heroes, self) < 0)
-            // {
-            //     var newLen = heroes.Length + 1;
-            //     Array.Resize(ref heroes, newLen);
-            //     heroes[newLen - 1] = self;
-            // }
             me = self;
-            // Logger.Warning($"self: {self}");
-            // Logger.Warning($"heroes[0].lastRoomId: {self.lastRoomId}");
             orig(self, lvl, cx, cy);
-            if(_ghost == null) _ghost = new GhostHero(game, me);
-            if (_netRole == NetRole.None) return;
-
-            // if (heroes.Length < players_count && game != null && me != null)
-            // {
-            //     _companion = _ghost.CreateGhost(me._level);
-            // }
         }
 
 
@@ -202,29 +187,18 @@ namespace DeadCellsMultiplayerMod
         void IOnHeroUpdate.OnHeroUpdate(double dt)
         {
             // if (_companion == null) return;
-            // _ghost.Teleport(me.cx - 5, me.cy, me.xr, me.yr);
             SendHeroCoords();
             ReceiveGhostCoords();
-            // checkOnLevel();
-            if(_ghost == null || me == null || _companionKing != null || me.cx == 0 || me.cy == 0) return; 
-            _companionKing = _ghost.CreateGhostKing(me._level);
-            Logger.Debug($"cx: {_companionKing.cx}, cy: {_companionKing.cy}");
-            Logger.Debug($"hero cx: {me.cx}, hero cy: {me.cy}");
+            checkOnLevel();
 
         }
 
         public static void checkOnLevel()
         {
-            if(_companion == null || me == null) return;
-            if(_companion.awake == true || me._level == null || _companion._level == null) return;
+            if(_companionKing == null || me == null) return;
             ReceiveGhostLevel();
             if(roomsMap != _remoteLevelText) return;
-            Level level = _companion.set_level(me._level);
-            _companion.awake = false;
-            me.awake = false;
-            _companion.wakeup(level, me.cx, me.cy);
-            me.wakeup(level, me.cx, me.cy);
-            _companion.awake = true;
+            _companionKing.set_level(me._level);
         }
 
 
@@ -234,7 +208,7 @@ namespace DeadCellsMultiplayerMod
             var net = _net;
             var hero = me;
 
-            if (net == null || hero == null || _companion == null) return;
+            if (net == null || hero == null || _companionKing == null) return;
             net.LevelSend(lvl);
 
         }
@@ -244,7 +218,7 @@ namespace DeadCellsMultiplayerMod
         {
             var net = _net;
             var ghost = _ghost;
-            if (net == null || ghost == null || _companion == null) return;
+            if (net == null || ghost == null || _companionKing == null) return;
 
             if (!net.TryGetRemoteLevelString(out var remoteLevel) || string.IsNullOrWhiteSpace(remoteLevel))
                 return;
@@ -265,7 +239,7 @@ namespace DeadCellsMultiplayerMod
             var net = _net;
             var hero = me;
 
-            if (net == null || hero == null || _companion == null) return;
+            if (net == null || hero == null || _companionKing == null) return;
             if (hero.cx == last_cx && hero.cy == last_cy) return;
 
             net.TickSend(hero.cx, hero.cy, hero.xr, hero.yr);

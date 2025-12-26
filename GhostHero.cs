@@ -36,19 +36,19 @@ namespace DeadCellsMultiplayerMod
 
         public KingSkin CreateGhostKing(Level level)
         {
-            king = new KingSkin(level, (int)_me.spr.x + 10, (int)_me.spr.y);
+            king = new KingSkin(level, (int)_me.spr.x, (int)_me.spr.y);
             king.init();
             king.set_level(level);
             king.set_team(_me._team);
             king.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             king.visible = true;
             king.initGfx();
-            Log.Debug($"king.initDone = {king.initDone}");
             return king;
         }
 
         public void TeleportKing(int x, int y, double? xr, double? yr)
         {
+            if (king == null) return;
             king.setPosCase(x, y, xr, yr);
         }
 
