@@ -22,6 +22,7 @@ using dc;
 using dc.shader;
 using dc.libs.heaps.slib;
 using dc.h3d.mat;
+using Serilog.Core;
 
 namespace DeadCellsMultiplayerMod
 {
@@ -193,12 +194,15 @@ namespace DeadCellsMultiplayerMod
 
         }
 
-        public static void checkOnLevel()
+        public void checkOnLevel()
         {
             if(_companionKing == null || me == null) return;
             ReceiveGhostLevel();
             if(roomsMap != _remoteLevelText) return;
             _companionKing.set_level(me._level);
+            // Logger.Warning($"Hero level = {me._level}; \n King level = {_companionKing._level}");
+            // _companionKing.disposeGfx();
+            // _companionKing.initGfx();
         }
 
 
@@ -230,7 +234,7 @@ namespace DeadCellsMultiplayerMod
         }
 
 
-        int last_cx, last_cy;
+        double last_x, last_y;
 
         private void SendHeroCoords()
         {
@@ -240,13 +244,16 @@ namespace DeadCellsMultiplayerMod
             var hero = me;
 
             if (net == null || hero == null || _companionKing == null) return;
-            if (hero.cx == last_cx && hero.cy == last_cy) return;
+            if (hero.spr.x == last_x && hero.spr.y == last_y) return;
 
-            net.TickSend(hero.cx, hero.cy, hero.xr, hero.yr);
-            last_cx = hero.cx;
-            last_cy = hero.cy;
+            net.TickSend(hero.spr.x, hero.spr.y);
+            last_x = hero.spr.x;
+            last_y = hero.spr.y;
 
         }
+
+
+        double rLastX=0, rLastY=0;
 
         private void ReceiveGhostCoords()
         {
@@ -254,9 +261,11 @@ namespace DeadCellsMultiplayerMod
             var ghost = _ghost;
             if (net == null || ghost == null) return;
 
-            if (net.TryGetRemote(out var rcx, out var rcy, out var rxr, out var ryr))
+            if (net.TryGetRemote(out var rx, out var ry))
             {
-                ghost.TeleportKing(rcx, rcy, rxr, ryr);
+                ghost.TeleportByPixels(rx, ry);
+                rLastX = rx;
+                rLastY = ry;
             }
         }
 

@@ -3,10 +3,9 @@ using dc.pr;
 using HaxeProxy.Runtime;
 using ModCore.Utitities;
 using Serilog;
-using dc.en;
-using dc.tool;
 using dc.h3d.mat;
 using dc.libs.heaps.slib;
+using dc;
 
 
 
@@ -43,18 +42,13 @@ namespace DeadCellsMultiplayerMod
             king.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             king.visible = true;
             king.initGfx();
+            SetLabel("TEST");
             return king;
         }
 
-        public void TeleportKing(int x, int y, double? xr, double? yr)
-        {
-            if (king == null) return;
-            king.setPosCase(x, y, xr, yr);
-        }
-
-
         public void Teleport(int x, int y, double? xr, double? yr)
         {
+            if (king == null) return;
             king?.setPosCase(x, y, xr, yr);
         }
 
@@ -63,12 +57,15 @@ namespace DeadCellsMultiplayerMod
             king?.setPosPixel(x, y);
         }
 
-        public void SetLabel(string? text, int? color = null)
+        public void SetLabel(string? text)
         {
             if (king == null || _me == null) return;
-            king.say(text.AsHaxeString(), 0, 0, 8);
-        //    _Assets _Assets = Assets.Class;
-            // dc.h2d.Text text_h2d = _Assets.makeText(text.AsHaxeString(), dc.ui.Text.Class.COLORS.get("ST".AsHaxeString()), true, _companion.spr);
+            _Assets _Assets = Assets.Class;
+            dc.h2d.Text text_h2d = _Assets.makeText(text.AsHaxeString(), dc.ui.Text.Class.COLORS.get("ST".AsHaxeString()), true, king.spr);
+            text_h2d.y -= 20;
+            // text_h2d.x = (double)king.spr.x / 2;
+            // text_h2d.scaleX = 1d;
+            // text_h2d.scaleY = 1d;
 
             
         }

@@ -31,9 +31,8 @@ public sealed class NetNode : IDisposable
     private bool _disposed;
 
     private readonly object _sync = new();
-    private int    _rcx, _rcy;
-    private double _rxr, _ryr;
-    private bool   _hasRemote;
+    private double _rx, _ry;
+    private bool _hasRemote;
     private string? _remoteLevelText;
 
     public bool HasRemote { get { lock (_sync) return _hasRemote; } }
@@ -272,15 +271,13 @@ public sealed class NetNode : IDisposable
                     }
 
                     var parts = line.Split('|');
-                    if (parts.Length == 4 &&
-                        int.TryParse(parts[0], out var cx) &&
-                        int.TryParse(parts[1], out var cy) &&
-                        double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var xr) &&
-                        double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var yr))
+                    if (parts.Length == 2 &&
+                        double.TryParse(parts[0], out var cx) &&
+                        double.TryParse(parts[1], out var cy))
                     {
                         lock (_sync)
                         {
-                            _rcx = cx; _rcy = cy; _rxr = xr; _ryr = yr; _hasRemote = true;
+                            _rx = cx; _ry = cy; _hasRemote = true;
                         }
                     }
                 }
@@ -328,12 +325,12 @@ public sealed class NetNode : IDisposable
         }
     }
 
-    public void TickSend(int cx, int cy, double xr, double yr)
+    public void TickSend(double cx, double cy)
     {
         if (_stream == null || _client == null || !_client.Connected) return;
         var line = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{cx}|{cy}|{xr}|{yr}\n");
+            $"{cx}|{cy}\n");
         _ = SendLineSafe(line);
     }
 
@@ -411,11 +408,11 @@ public sealed class NetNode : IDisposable
         _ = SendLineSafe(line);
     }
 
-    public bool TryGetRemote(out int rcx, out int rcy, out double rxr, out double ryr)
+    public bool TryGetRemote(out double rx, out double ry)
     {
         lock (_sync)
         {
-            rcx = _rcx; rcy = _rcy; rxr = _rxr; ryr = _ryr;
+            rx = _rx; ry = _ry;
             return _hasRemote;
         }
     }
