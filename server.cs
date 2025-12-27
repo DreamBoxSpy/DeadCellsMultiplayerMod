@@ -199,7 +199,6 @@ public sealed class NetNode : IDisposable
                     sb.Remove(0, idx + 1);
                     if (line.Length == 0) continue;
 
-                    _log.Information("[NetNode] recv line: \"{line}\"", line);
 
                     if (line.StartsWith("WELCOME"))
                     {

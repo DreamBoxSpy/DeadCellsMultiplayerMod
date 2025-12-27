@@ -49,6 +49,7 @@ namespace DeadCellsMultiplayerMod
 
         public void reInitKing(Level level)
         {
+            king.disposeGfx();
             king.set_level(level);
             king.initGfx();
             ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
@@ -63,7 +64,7 @@ namespace DeadCellsMultiplayerMod
 
         public void TeleportByPixels(double x, double y)
         {
-            king?.setPosPixel(x, y-0.1d);
+            king?.setPosPixel(x, y-0.2d);
         }
 
         public void SetLabel(Entity entity, string? text)

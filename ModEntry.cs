@@ -176,7 +176,7 @@ namespace DeadCellsMultiplayerMod
             }
             
             ReceiveGhostLevel();
-            if(roomsMap != _remoteLevelText || oldLevel == null || kingInitialized) return;
+            if(roomsMap != _remoteLevelText || kingInitialized) return;
                 _ghost.reInitKing(me._level);
                 kingInitialized = true;
         }
@@ -220,11 +220,14 @@ namespace DeadCellsMultiplayerMod
 
         public void checkOnLevel()
         {
-            if(kingInitialized) return;
-            if(_companionKing == null || me == null) return;
             ReceiveGhostLevel();
+
+            Logger.Debug($"kingInitialized: {kingInitialized}");
+            if(kingInitialized) return;
             if(roomsMap != _remoteLevelText) return;
-                _ghost.reInitKing(me._level);
+            if(_companionKing == null || me == null || _ghost == null) return;
+            _ghost.reInitKing(me._level);
+            kingInitialized = true;
         }
 
 
@@ -253,6 +256,8 @@ namespace DeadCellsMultiplayerMod
                 return;
 
             _remoteLevelText = remoteLevel;
+            // Remote changed level; force a re-init pass so players already in the room can see the companion.
+            kingInitialized = false;
         }
 
 
@@ -275,7 +280,7 @@ namespace DeadCellsMultiplayerMod
         }
 
 
-        double rLastX=0, rLastY=0;
+        public static double rLastX=0, rLastY=0;
 
         private void ReceiveGhostCoords()
         {
