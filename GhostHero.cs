@@ -22,6 +22,8 @@ namespace DeadCellsMultiplayerMod
 
         private SpriteLib hero_lib;
 
+        private dc.tool.Cooldown cd;
+
         private dc.String hero_group;
         private static ILogger? _log;
 
@@ -47,6 +49,7 @@ namespace DeadCellsMultiplayerMod
             kingskinplay("PrisonerDefault");
             ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             SetLabel(king, GameMenu.RemoteUsername);
+            cd = king.cd;
             return king;
         }
 
@@ -63,7 +66,8 @@ namespace DeadCellsMultiplayerMod
 
         public void reInitKing(Level level)
         {
-            king.disposeGfx();
+            king.cd = cd;
+            // king.disposeGfx();
             king.set_level(level);
             king.initGfx();
             kingskinplay("PrisonerDefault");
