@@ -67,6 +67,13 @@ namespace DeadCellsMultiplayerMod
             king?.setPosPixel(x, y-0.2d);
         }
 
+        public void PlayAnimation(string anim, int? queueAnim = null, bool? g = null)
+        {
+            if (king == null || king.spr == null || king.spr._animManager == null) return;
+            if (string.IsNullOrWhiteSpace(anim)) return;
+            king.spr._animManager.play(anim.AsHaxeString(), queueAnim, g);
+        }
+
         public void SetLabel(Entity entity, string? text)
         {
             if (entity == null) return;

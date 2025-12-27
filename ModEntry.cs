@@ -53,6 +53,14 @@ namespace DeadCellsMultiplayerMod
 
         private GameDataSync gds;
 
+        private string? _lastAnimSent;
+        private int? _lastAnimQueueSent;
+        private bool? _lastAnimGSent;
+        private string? _lastRemoteAnim;
+        private int? _lastRemoteAnimQueue;
+        private bool? _lastRemoteAnimG;
+        private double _animResendElapsed;
+        private const double AnimResendInterval = 0.4;
 
 
         public static string roomsMap;
@@ -83,22 +91,35 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_Hero.onLevelChanged attached");
             Hook__LevelTransition.gotoSub += hook_gotosub;
             Logger.Debug("[NetMod] Hook__LevelTransition.gotoSub attached");
-            // Hook_ZDoor.enter += Hook_ZDoor_enter;
-            // Logger.Debug("[NetMod] Hook_ZDoor.enter attached");
-            // Hook_LevelTransition.loadNewLevel += Hook__LevelTransition_loadnewlevel;
-            // Logger.Debug("[NetMod] Hook_LevelTransition.loadNewLevel attached");
             Hook_Game.initHero += Hook_Game_inithero;
             Logger.Debug("[NetMod] Hook_Game.initHero attached");
             Hook_Game.activateSubLevel += hook_game_activateSubLevel;
             Logger.Debug("[NetMod] Hook_Game.activateSubLevel attached");
-            // Hook__AfterZDoor.__constructor__ += Hook__AfterZDoor_intcompanion;
-            // Logger.Debug("[NetMod] Hook__AfterZDoor.__constructor__ attached");
             Hook_User.newGame += GameDataSync.user_hook_new_game;
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
             Hook__MiniMap.__constructor__ += Hook__MiniMap__constructor__;
             Logger.Debug("[NetMod] Hook__MiniMap.__constructor__ attached");
+            Hook_AnimManager.play += Hook_AnimManager_play;
+        }
+
+
+        private AnimManager Hook_AnimManager_play(Hook_AnimManager.orig_play orig, AnimManager self, dc.String plays, int? queueAnim, bool? g)
+        {
+            var play = plays.ToString();
+            // if(play == "idle" || play == "run" || play == "jumpUp" || play == "jumpDown" || play == "crouch" || play == "land" || play == "rollStart" || play == "rolling" || play == "rollEnd")
+            // {
+            //     Logger.Debug($"playes: {plays}; queueAnim: {queueAnim}");
+            // }
+
+            if (me?.spr?._animManager != null && ReferenceEquals(self, me.spr._animManager))
+            {
+                SendHeroAnim(play, queueAnim, g, force:true);
+            }
+
+
+            return orig(self, plays, queueAnim, g);
         }
 
         private void Hook__MiniMap__constructor__(Hook__MiniMap.orig___constructor__ orig, MiniMap p, dc.libs.Process lvl, Level fowPNG, dc.haxe.io.Bytes RGBReplace)
@@ -107,11 +128,6 @@ namespace DeadCellsMultiplayerMod
             orig(p, lvl, fowPNG, RGBReplace);
         }
 
-        private void Hook__AfterZDoor_intcompanion(Hook__AfterZDoor.orig___constructor__ orig, AfterZDoor arg1, Hero hero)
-        {
-            me = hero;
-            orig(arg1, hero);
-        }
 
         private void hook_game_activateSubLevel(Hook_Game.orig_activateSubLevel orig, Game self, LevelMap linkId, int? shouldSave, Ref<bool> outAnim, Ref<bool> shouldSave2)
         {
@@ -124,31 +140,6 @@ namespace DeadCellsMultiplayerMod
         {
             return orig(self, cx, cy, from, fromDeadBody, oldLevel, e);
         }
-
-        private void Hook__LevelTransition_loadnewlevel(Hook_LevelTransition.orig_loadNewLevel orig, LevelTransition self)
-        {
-            orig(self);
-        }
-
-
-        // private void Hook_ZDoor_enter(Hook_ZDoor.orig_enter orig, ZDoor self, Hero h)
-        // {
-        //     HlAction onComplete = new HlAction(() =>
-        //     {
-        //         var game = Game.Class.ME;
-        //         game.subLevels = me._level.game.subLevels = _companionKing._level.game.subLevels;
-        //         _LevelTransition levelTransition = LevelTransition.Class;
-        //         if (me._level.map == _companionKing._level.map)
-        //         {
-        //             self.destMap = self.destMap;
-        //         }
-        //         levelTransition.gotoSub(self.destMap, self.linkId);
-        //     });
-        //     UseZDoor useZDoor = new UseZDoor(_companionKing, self, onComplete);
-        //     UseZDoor useZDoor2 = new UseZDoor(me, self, onComplete);
-        // }
-
-
 
 
         public LevelTransition hook_gotosub(Hook__LevelTransition.orig_gotoSub orig, dc.level.LevelMap map, int? linkId)
@@ -204,7 +195,9 @@ namespace DeadCellsMultiplayerMod
         public void OnFrameUpdate(double dt)
         {
             if (!_ready) return;
+            ReceiveGhostAnim();
             GameMenu.TickMenu(dt);
+
         }
 
 
@@ -214,15 +207,21 @@ namespace DeadCellsMultiplayerMod
             // if(_companionKing != null) _ghost.TeleportByPixels(me.spr.x + 100, me.spr.y);
             SendHeroCoords();
             ReceiveGhostCoords();
+            ReceiveGhostAnim();
+            ResendCurrentAnim(dt);
             checkOnLevel();
 
         }
+
+        // public void kingPlayAnim()
+        // {
+        //     _companionKing.spr._animManager.play
+        // }
 
         public void checkOnLevel()
         {
             ReceiveGhostLevel();
 
-            Logger.Debug($"kingInitialized: {kingInitialized}");
             if(kingInitialized) return;
             if(roomsMap != _remoteLevelText) return;
             if(_companionKing == null || me == null || _ghost == null) return;
@@ -291,10 +290,62 @@ namespace DeadCellsMultiplayerMod
             if (net.TryGetRemote(out var rx, out var ry))
             {
                 ghost.TeleportByPixels(rx, ry);
+                if(rx < rLastX)
+                    _companionKing.dir = -1;
+                if(rx > rLastX)
+                    _companionKing.dir = 1;
                 rLastX = rx;
                 rLastY = ry;
             }
         }
+
+        private void SendHeroAnim(string anim, int? queueAnim, bool? g, bool force = false)
+        {
+            if (_netRole == NetRole.None) return;
+            var net = _net;
+            if (net == null || string.IsNullOrWhiteSpace(anim)) return;
+            if (!force &&
+                string.Equals(_lastAnimSent, anim, StringComparison.Ordinal) &&
+                _lastAnimQueueSent == queueAnim &&
+                _lastAnimGSent == g)
+                return;
+
+            net.SendAnim(anim, queueAnim, g);
+            _lastAnimSent = anim;
+            _lastAnimQueueSent = queueAnim;
+            _lastAnimGSent = g;
+            _animResendElapsed = 0;
+        }
+
+        private void ReceiveGhostAnim()
+        {
+            var net = _net;
+            var ghost = _ghost;
+            if (net == null || ghost == null || _companionKing == null) return;
+
+            if (net.TryGetRemoteAnim(out var anim, out var queueAnim, out var g) && !string.IsNullOrWhiteSpace(anim))
+            {
+                _lastRemoteAnim = anim;
+                _lastRemoteAnimQueue = queueAnim;
+                _lastRemoteAnimG = g;
+                _ghost.PlayAnimation(anim, queueAnim, g);
+            }
+        }
+
+        private void ResendCurrentAnim(double dt)
+        {
+            if (_netRole == NetRole.None) return;
+            var net = _net;
+            if (net == null) return;
+            if (string.IsNullOrWhiteSpace(_lastAnimSent)) return;
+
+            _animResendElapsed += dt;
+            if (_animResendElapsed < AnimResendInterval) return;
+
+            net.SendAnim(_lastAnimSent, _lastAnimQueueSent, _lastAnimGSent);
+            _animResendElapsed = 0;
+        }
+
 
 
 

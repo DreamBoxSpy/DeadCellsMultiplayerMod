@@ -34,6 +34,10 @@ public sealed class NetNode : IDisposable
     private double _rx, _ry;
     private bool _hasRemote;
     private string? _remoteLevelText;
+    private string? _remoteAnim;
+    private int? _remoteAnimQueue;
+    private bool? _remoteAnimG;
+    private bool _hasRemoteAnim;
 
     public bool HasRemote { get { lock (_sync) return _hasRemote; } }
     public bool IsAlive =>
@@ -271,6 +275,28 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("ANIM|", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = line[(line.IndexOf('|') + 1)..];
+                        var partsAnim = payload.Split('|');
+                        string animName = partsAnim.Length >= 1 ? partsAnim[0] : string.Empty;
+                        int? q = null;
+                        bool? gFlag = null;
+                        if (partsAnim.Length >= 2 && int.TryParse(partsAnim[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedQ))
+                            q = parsedQ;
+                        if (partsAnim.Length >= 3 && TryParseBool(partsAnim[2], out var parsedBool))
+                            gFlag = parsedBool;
+                        lock (_sync)
+                        {
+                            _hasRemote = true;
+                            _remoteAnim = animName;
+                            _remoteAnimQueue = q;
+                            _remoteAnimG = gFlag;
+                            _hasRemoteAnim = true;
+                        }
+                        continue;
+                    }
+
                     if (line.StartsWith("KICK"))
                     {
                         GameMenu.NotifyRemoteDisconnected(_role);
@@ -302,6 +328,10 @@ public sealed class NetNode : IDisposable
             {
                 _hasRemote = false;
                 _remoteLevelText = null;
+                _remoteAnim = null;
+                _remoteAnimQueue = null;
+                _remoteAnimG = null;
+                _hasRemoteAnim = false;
             }
             GameMenu.NotifyRemoteDisconnected(_role);
         }
@@ -424,6 +454,21 @@ public sealed class NetNode : IDisposable
         SendRaw("KICK");
     }
 
+    public void SendAnim(string anim, int? queueAnim = null, bool? g = null)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending anim: no connected client");
+            return;
+        }
+
+        var safe = (anim ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        if (safe.Length == 0) safe = "idle";
+        var queuePart = queueAnim.HasValue ? queueAnim.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
+        var gPart = g.HasValue ? (g.Value ? "1" : "0") : string.Empty;
+        SendRaw($"ANIM|{safe}|{queuePart}|{gPart}");
+    }
+
     private void SendRaw(string payload)
     {
         var line = payload.EndsWith('\n') ? payload : payload + "\n";
@@ -446,6 +491,39 @@ public sealed class NetNode : IDisposable
             levelText = _remoteLevelText;
             return _hasRemote && levelText != null;
         }
+    }
+
+    public bool TryGetRemoteAnim(out string? anim, out int? queueAnim, out bool? g)
+    {
+        lock (_sync)
+        {
+            if (!_hasRemoteAnim)
+            {
+                anim = null; queueAnim = null; g = null;
+                return false;
+            }
+            anim = _remoteAnim;
+            queueAnim = _remoteAnimQueue;
+            g = _remoteAnimG;
+            _hasRemoteAnim = false;
+            return _hasRemote && anim != null;
+        }
+    }
+
+    private static bool TryParseBool(string text, out bool value)
+    {
+        if (string.Equals(text, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            value = true;
+            return true;
+        }
+        if (string.Equals(text, "0", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "false", StringComparison.OrdinalIgnoreCase))
+        {
+            value = false;
+            return true;
+        }
+        value = false;
+        return false;
     }
 
     public void Dispose()
