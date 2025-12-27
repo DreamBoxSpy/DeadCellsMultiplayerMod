@@ -6,6 +6,8 @@ using Serilog;
 using dc.h3d.mat;
 using dc.libs.heaps.slib;
 using dc;
+using Hashlink.Virtuals;
+using dc.hl.types;
 
 
 
@@ -23,9 +25,9 @@ namespace DeadCellsMultiplayerMod
         private dc.String hero_group;
         private static ILogger? _log;
 
-        private KingSkin king;
+        public KingSkin king;
 
-        
+
         public GhostHero(dc.pr.Game game, Hero me)
         {
             _game = game;
@@ -42,9 +44,21 @@ namespace DeadCellsMultiplayerMod
             king.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             king.visible = true;
             king.initGfx();
+            kingskinplay("PrisonerDefault");
             ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             SetLabel(king, GameMenu.RemoteUsername);
             return king;
+        }
+
+
+        public void kingskinplay(string skinkmap)
+        {
+            dc.String group = "idle".AsHaxeString();
+            SpriteLib heroLib = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo(skinkmap.AsHaxeString()));
+            Texture normalMapFromGroup = heroLib.getNormalMapFromGroup(group);
+            int? dp_ROOM_MAIN_HERO = Const.Class.DP_ROOM_MAIN_HERO;
+            king.initSprite(heroLib, group, 0.5, 0.5, dp_ROOM_MAIN_HERO, true, null, normalMapFromGroup);
+            king.initColorMap(Cdb.Class.getSkinInfo(skinkmap.AsHaxeString()));
         }
 
         public void reInitKing(Level level)
@@ -52,6 +66,7 @@ namespace DeadCellsMultiplayerMod
             king.disposeGfx();
             king.set_level(level);
             king.initGfx();
+            kingskinplay("PrisonerDefault");
             ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             SetLabel(king, GameMenu.RemoteUsername);
         }
@@ -64,7 +79,7 @@ namespace DeadCellsMultiplayerMod
 
         public void TeleportByPixels(double x, double y)
         {
-            king?.setPosPixel(x, y-0.2d);
+            king?.setPosPixel(x, y - 0.2d);
         }
 
         public void PlayAnimation(string anim, int? queueAnim = null, bool? g = null)
@@ -87,7 +102,7 @@ namespace DeadCellsMultiplayerMod
             text_h2d.scaleY = 0.6d;
             text_h2d.textColor = 0;
 
-            
+
         }
     }
 }
