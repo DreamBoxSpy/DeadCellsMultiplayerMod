@@ -65,12 +65,12 @@ namespace DeadCellsMultiplayerMod
 
         public static string roomsMap;
 
-        public static SpriteLib heroLib; 
-        public static dc.String heroGroup; 
+        public static SpriteLib heroLib;
+        public static dc.String heroGroup;
 
         public static MiniMap miniMap;
 
-        public static bool kingInitialized=false;
+        public static bool kingInitialized = false;
 
         public void OnGameEndInit()
         {
@@ -99,8 +99,6 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_User.newGame attached");
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
-            Hook__MiniMap.__constructor__ += Hook__MiniMap__constructor__;
-            Logger.Debug("[NetMod] Hook__MiniMap.__constructor__ attached");
             Hook_AnimManager.play += Hook_AnimManager_play;
         }
 
@@ -115,17 +113,11 @@ namespace DeadCellsMultiplayerMod
 
             if (me?.spr?._animManager != null && ReferenceEquals(self, me.spr._animManager))
             {
-                SendHeroAnim(play, queueAnim, g, force:true);
+                SendHeroAnim(play, queueAnim, g, force: true);
             }
 
 
             return orig(self, plays, queueAnim, g);
-        }
-
-        private void Hook__MiniMap__constructor__(Hook__MiniMap.orig___constructor__ orig, MiniMap p, dc.libs.Process lvl, Level fowPNG, dc.haxe.io.Bytes RGBReplace)
-        {
-            miniMap = p;
-            orig(p, lvl, fowPNG, RGBReplace);
         }
 
 
@@ -153,23 +145,23 @@ namespace DeadCellsMultiplayerMod
 
         public void hook_level_changed(Hook_Hero.orig_onLevelChanged orig, Hero self, Level oldLevel)
         {
-            kingInitialized = false;   
+            kingInitialized = false;
             me = self;
             orig(self, oldLevel);
-            if(_ghost == null) _ghost = new GhostHero(game, me);
+            if (_ghost == null) _ghost = new GhostHero(game, me);
             _ghost.SetLabel(me, GameMenu.Username);
 
-            if(_companionKing == null)
+            if (_companionKing == null)
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
                 kingInitialized = true;
                 return;
             }
-            
+
             ReceiveGhostLevel();
-            if(roomsMap != _remoteLevelText || kingInitialized) return;
-                _ghost.reInitKing(me._level);
-                kingInitialized = true;
+            if (roomsMap != _remoteLevelText || kingInitialized) return;
+            _ghost.reInitKing(me._level);
+            kingInitialized = true;
         }
 
 
@@ -208,7 +200,7 @@ namespace DeadCellsMultiplayerMod
             SendHeroCoords();
             ReceiveGhostCoords();
             ReceiveGhostAnim();
-            if(_lastAnimSent == "idle" || _lastAnimSent == "run" || _lastAnimSent == "jumpUp" || _lastAnimSent == "jumpDown" || _lastAnimSent == "crouch" || _lastAnimSent == "land" || _lastAnimSent == "rollStart" || _lastAnimSent == "rolling" || _lastAnimSent == "rollEnd")
+            if (_lastAnimSent == "idle" || _lastAnimSent == "run" || _lastAnimSent == "jumpUp" || _lastAnimSent == "jumpDown" || _lastAnimSent == "crouch" || _lastAnimSent == "land" || _lastAnimSent == "rollStart" || _lastAnimSent == "rolling" || _lastAnimSent == "rollEnd")
             {
                 ResendCurrentAnim(dt);
             }
@@ -220,9 +212,9 @@ namespace DeadCellsMultiplayerMod
         {
             ReceiveGhostLevel();
 
-            if(kingInitialized) return;
-            if(roomsMap != _remoteLevelText) return;
-            if(_companionKing == null || me == null || _ghost == null) return;
+            if (kingInitialized) return;
+            if (roomsMap != _remoteLevelText) return;
+            if (_companionKing == null || me == null || _ghost == null) return;
             _ghost.reInitKing(me._level);
             kingInitialized = true;
         }
@@ -276,7 +268,7 @@ namespace DeadCellsMultiplayerMod
         }
 
 
-        public static double rLastX=0, rLastY=0;
+        public static double rLastX = 0, rLastY = 0;
 
         private void ReceiveGhostCoords()
         {
@@ -287,9 +279,9 @@ namespace DeadCellsMultiplayerMod
             if (net.TryGetRemote(out var rx, out var ry))
             {
                 ghost.TeleportByPixels(rx, ry);
-                if(rx < rLastX)
+                if (rx < rLastX)
                     _companionKing.dir = -1;
-                if(rx > rLastX)
+                if (rx > rLastX)
                     _companionKing.dir = 1;
                 rLastX = rx;
                 rLastY = ry;
@@ -336,7 +328,7 @@ namespace DeadCellsMultiplayerMod
             double AnimResendInterval_local;
             if (net == null) return;
             if (string.IsNullOrWhiteSpace(_lastAnimSent)) return;
-            if(_lastAnimSent == "idle")
+            if (_lastAnimSent == "idle")
             {
                 AnimResendInterval_local = 1;
             }

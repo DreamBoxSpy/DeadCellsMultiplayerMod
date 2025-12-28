@@ -47,7 +47,7 @@ namespace DeadCellsMultiplayerMod
             king.visible = true;
             king.initGfx();
             kingskinplay("PrisonerDefault");
-            ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            _me._level.minimap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             SetLabel(king, GameMenu.RemoteUsername);
             cd = king.cd;
             return king;
@@ -71,7 +71,7 @@ namespace DeadCellsMultiplayerMod
             king.set_level(level);
             king.initGfx();
             kingskinplay("PrisonerDefault");
-            ModEntry.miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            _me._level.minimap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             SetLabel(king, GameMenu.RemoteUsername);
         }
 
