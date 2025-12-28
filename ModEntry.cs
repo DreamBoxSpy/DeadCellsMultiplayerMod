@@ -100,8 +100,16 @@ namespace DeadCellsMultiplayerMod
             Hook_LevelGen.generate += GameDataSync.hook_generate;
             Logger.Debug("[NetMod] Hook_LevelGen.generate attached");
             Hook_AnimManager.play += Hook_AnimManager_play;
+            Logger.Debug("[NetMod] Hook_AnimManager.play");
+            Hook_MiniMap.track += Hook_MiniMap_track;
+            Logger.Debug("[NetMod] Hook_MiniMap.track");
         }
 
+        private void Hook_MiniMap_track(Hook_MiniMap.orig_track orig, MiniMap self, Entity col, int? iconId, dc.String forcedIconColor, int? blink, bool? customTile, Tile text, dc.String itemKind, dc.String isInfectedFood)
+        {
+            miniMap = self;
+            orig(self, col, iconId, forcedIconColor, blink, customTile, text, itemKind, isInfectedFood);
+        }
 
         private AnimManager Hook_AnimManager_play(Hook_AnimManager.orig_play orig, AnimManager self, dc.String plays, int? queueAnim, bool? g)
         {
@@ -118,6 +126,12 @@ namespace DeadCellsMultiplayerMod
 
 
             return orig(self, plays, queueAnim, g);
+        }
+
+        private void Hook__MiniMap__constructor__(Hook__MiniMap.orig___constructor__ orig, MiniMap p, dc.libs.Process lvl, Level fowPNG, dc.haxe.io.Bytes RGBReplace)
+        {
+
+            orig(p, lvl, fowPNG, RGBReplace);
         }
 
 

@@ -39,6 +39,7 @@ namespace DeadCellsMultiplayerMod
 
         public KingSkin CreateGhostKing(Level level)
         {
+
             king = new KingSkin(level, (int)_me.spr.x, (int)_me.spr.y);
             king.init();
             king.set_level(level);
@@ -47,7 +48,12 @@ namespace DeadCellsMultiplayerMod
             king.visible = true;
             king.initGfx();
             kingskinplay("PrisonerDefault");
-            _me._level.minimap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            var miniMap = ModEntry.miniMap;
+            if (miniMap != null)
+            {
+                miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            }
+
             SetLabel(king, GameMenu.RemoteUsername);
             cd = king.cd;
             return king;
@@ -71,7 +77,11 @@ namespace DeadCellsMultiplayerMod
             king.set_level(level);
             king.initGfx();
             kingskinplay("PrisonerDefault");
-            _me._level.minimap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            var miniMap = ModEntry.miniMap;
+            if (miniMap != null)
+            {
+                miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
+            }
             SetLabel(king, GameMenu.RemoteUsername);
         }
 
