@@ -533,7 +533,7 @@ public sealed class NetNode : IDisposable
         try { _stream?.Close(); } catch { }
         try { _client?.Close(); } catch { }
         try { _listener?.Stop(); } catch { }
-        GameDataSync.seed = 0;
+        GameDataSync.Seed = 0;
         _stream = null; _client = null; _listener = null;
         try { _sendLock.Dispose(); } catch { }
     }

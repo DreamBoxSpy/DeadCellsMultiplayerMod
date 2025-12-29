@@ -17,23 +17,21 @@ namespace DeadCellsMultiplayerMod
     {
         private readonly dc.pr.Game _game;
         private readonly Hero _me;
-
-        private Texture hero_nrmTex;
-
-        private SpriteLib hero_lib;
-
-        private dc.tool.Cooldown cd;
-
-        private dc.String hero_group;
         private static ILogger? _log;
+
+        dc.tool.Cooldown Cooldown;
 
         public KingSkin king;
 
+        HSprite skin;
 
-        public GhostHero(dc.pr.Game game, Hero me)
+
+
+        public GhostHero(dc.pr.Game game, Hero me, ILogger logger)
         {
             _game = game;
             _me = me;
+            _log = logger;
         }
 
 
@@ -53,9 +51,9 @@ namespace DeadCellsMultiplayerMod
             {
                 miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             }
-
             SetLabel(king, GameMenu.RemoteUsername);
-            cd = king.cd;
+            Cooldown = king.cd;
+            Cooldown.fastCheck = king.cd.fastCheck;
             return king;
         }
 
@@ -70,12 +68,15 @@ namespace DeadCellsMultiplayerMod
             king.initColorMap(Cdb.Class.getSkinInfo(skinkmap.AsHaxeString()));
         }
 
-        public void reInitKing(Level level)
+        public KingSkin reInitKing(Level level)
         {
-            king.cd = cd;
-            // king.disposeGfx();
+            king.destroy();
+            king.dispose();
+            king.disposeGfx();
+            king.cd= Cooldown;
             king.set_level(level);
             king.initGfx();
+            king.visible = true;
             kingskinplay("PrisonerDefault");
             var miniMap = ModEntry.miniMap;
             if (miniMap != null)
@@ -83,6 +84,8 @@ namespace DeadCellsMultiplayerMod
                 miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             }
             SetLabel(king, GameMenu.RemoteUsername);
+
+            return king;
         }
 
         public void Teleport(int x, int y, double? xr, double? yr)
@@ -100,6 +103,11 @@ namespace DeadCellsMultiplayerMod
         {
             if (king == null || king.spr == null || king.spr._animManager == null) return;
             if (string.IsNullOrWhiteSpace(anim)) return;
+            if(king.cd.fastCheck != null)
+            {
+                Cooldown = king.cd;
+                Cooldown.fastCheck = king.cd.fastCheck;
+            }
             king.spr._animManager.play(anim.AsHaxeString(), queueAnim, g);
         }
 
