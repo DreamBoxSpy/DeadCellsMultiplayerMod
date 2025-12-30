@@ -19,11 +19,11 @@ namespace DeadCellsMultiplayerMod
         private readonly Hero _me;
         private static ILogger? _log;
 
-        dc.tool.Cooldown Cooldown;
+
 
         public KingSkin king;
 
-        HSprite skin;
+
 
 
 
@@ -45,46 +45,32 @@ namespace DeadCellsMultiplayerMod
             king.setPosCase(_me.cx, _me.cy, _me.xr, _me.yr);
             king.visible = true;
             king.initGfx();
-            kingskinplay("PrisonerDefault");
             var miniMap = ModEntry.miniMap;
-            if (miniMap != null)
+            if (miniMap != null && _me._level.map == king._level.map)
             {
                 miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             }
             SetLabel(king, GameMenu.RemoteUsername);
-            Cooldown = king.cd;
-            Cooldown.fastCheck = king.cd.fastCheck;
+
             return king;
         }
 
 
-        public void kingskinplay(string skinkmap)
-        {
-            dc.String group = "idle".AsHaxeString();
-            SpriteLib heroLib = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo(skinkmap.AsHaxeString()));
-            Texture normalMapFromGroup = heroLib.getNormalMapFromGroup(group);
-            int? dp_ROOM_MAIN_HERO = Const.Class.DP_ROOM_MAIN_HERO;
-            king.initSprite(heroLib, group, 0.5, 0.5, dp_ROOM_MAIN_HERO, true, null, normalMapFromGroup);
-            king.initColorMap(Cdb.Class.getSkinInfo(skinkmap.AsHaxeString()));
-        }
-
         public KingSkin reInitKing(Level level)
         {
-            king.destroy();
-            king.dispose();
-            king.disposeGfx();
-            king.cd= Cooldown;
+            if (king == null)
+            {
+                king.init();
+            }
             king.set_level(level);
             king.initGfx();
             king.visible = true;
-            kingskinplay("PrisonerDefault");
             var miniMap = ModEntry.miniMap;
-            if (miniMap != null)
+            if (miniMap != null && _me._level.map == king._level.map)
             {
                 miniMap.track(king, 14888237, "minimapHero".AsHaxeString(), null, true, null, null, null);
             }
             SetLabel(king, GameMenu.RemoteUsername);
-
             return king;
         }
 
@@ -103,11 +89,6 @@ namespace DeadCellsMultiplayerMod
         {
             if (king == null || king.spr == null || king.spr._animManager == null) return;
             if (string.IsNullOrWhiteSpace(anim)) return;
-            if(king.cd.fastCheck != null)
-            {
-                Cooldown = king.cd;
-                Cooldown.fastCheck = king.cd.fastCheck;
-            }
             king.spr._animManager.play(anim.AsHaxeString(), queueAnim, g);
         }
 
@@ -123,8 +104,6 @@ namespace DeadCellsMultiplayerMod
             text_h2d.scaleX = 0.6d;
             text_h2d.scaleY = 0.6d;
             text_h2d.textColor = 0;
-
-
         }
     }
 }

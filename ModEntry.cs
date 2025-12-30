@@ -104,7 +104,24 @@ namespace DeadCellsMultiplayerMod
             Logger.Debug("[NetMod] Hook_AnimManager.play");
             Hook_MiniMap.track += Hook_MiniMap_track;
             Logger.Debug("[NetMod] Hook_MiniMap.track");
+            Hook_KingSkin.initGfx += Hook_KingSkin_initgfx;
+            Logger.Debug("[NetMod] Hook_KingSkin.initGfx");
         }
+
+
+
+        private void Hook_KingSkin_initgfx(Hook_KingSkin.orig_initGfx orig, KingSkin self)
+        {
+            orig(self);
+            dc.String group = "idle".AsHaxeString();
+            SpriteLib heroLib = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo("PrisonerDefault".AsHaxeString()));
+            self.spr.lib = heroLib;
+            Texture normalMapFromGroup = heroLib.getNormalMapFromGroup(group);
+            int? dp_ROOM_MAIN_HERO = Const.Class.DP_ROOM_MAIN_HERO;
+            self.initSprite(heroLib, group, 0.5, 0.5, dp_ROOM_MAIN_HERO, true, null, normalMapFromGroup);
+            self.initColorMap(Cdb.Class.getSkinInfo("PrisonerDefault".AsHaxeString()));
+        }
+
 
         private void Hook_MiniMap_track(Hook_MiniMap.orig_track orig, MiniMap self, Entity col, int? iconId, dc.String forcedIconColor, int? blink, bool? customTile, Tile text, dc.String itemKind, dc.String isInfectedFood)
         {
@@ -153,14 +170,20 @@ namespace DeadCellsMultiplayerMod
             if (_companionKing == null)
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
-                kingInitialized = true;
-                return;
+                if (me._level.map != _companionKing._level.map)
+                {
+                    _companionKing.destroy();
+                }
             }
-
+            else
+            {
+                _companionKing = _ghost.CreateGhostKing(me._level);
+                if (me._level.map != _companionKing._level.map)
+                {
+                    _companionKing.destroy();
+                }
+            }
             ReceiveGhostLevel();
-            if (roomsMap != _remoteLevelText || kingInitialized) return;
-            _companionKing = _ghost.reInitKing(me._level);
-            kingInitialized = true;
         }
 
 
@@ -261,7 +284,6 @@ namespace DeadCellsMultiplayerMod
             net.TickSend(hero.spr.x, hero.spr.y);
             last_x = hero.spr.x;
             last_y = hero.spr.y;
-
         }
 
 
