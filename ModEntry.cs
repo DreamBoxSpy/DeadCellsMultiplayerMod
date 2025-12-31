@@ -38,7 +38,7 @@ namespace DeadCellsMultiplayerMod
         public static ModEntry? Instance { get; private set; }
         private bool _ready;
 
-        public static string? _remoteLevelText;
+        public static int? _remoteLevelUid;
 
         private NetRole _netRole = NetRole.None;
         private static NetNode? _net;
@@ -49,7 +49,6 @@ namespace DeadCellsMultiplayerMod
         public static KingSkin _companionKing = null;
         static Hero me = null;
         private static GhostHero? _ghost;
-        private bool _ghostPending;
 
         private GameDataSync gds;
 
@@ -62,15 +61,22 @@ namespace DeadCellsMultiplayerMod
         private double _animResendElapsed;
         private const double AnimResendInterval = 0.4;
 
-
-        public static string roomsMap;
-
-        public static SpriteLib heroLib;
-        public static dc.String heroGroup;
-
         public static MiniMap miniMap;
 
         public static bool kingInitialized = false;
+
+        private string remoteSkin;
+
+        internal static void SetRemoteSkin(string? skin)
+        {
+            var instance = Instance;
+            if (instance == null)
+                return;
+
+            instance.remoteSkin = string.IsNullOrWhiteSpace(skin)
+                ? "PrisonerDefault"
+                : skin.Replace("|", "/").Trim();
+        }
 
 
         public void OnGameEndInit()
@@ -112,14 +118,15 @@ namespace DeadCellsMultiplayerMod
 
         private void Hook_KingSkin_initgfx(Hook_KingSkin.orig_initGfx orig, KingSkin self)
         {
+            if (remoteSkin == null) remoteSkin = "PrisonerDefault";
             orig(self);
             dc.String group = "idle".AsHaxeString();
-            SpriteLib heroLib = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo("PrisonerDefault".AsHaxeString()));
+            SpriteLib heroLib = Assets.Class.getHeroLib(Cdb.Class.getSkinInfo(remoteSkin.AsHaxeString()));
             self.spr.lib = heroLib;
             Texture normalMapFromGroup = heroLib.getNormalMapFromGroup(group);
             int? dp_ROOM_MAIN_HERO = Const.Class.DP_ROOM_MAIN_HERO;
             self.initSprite(heroLib, group, 0.5, 0.5, dp_ROOM_MAIN_HERO, true, null, normalMapFromGroup);
-            self.initColorMap(Cdb.Class.getSkinInfo("PrisonerDefault".AsHaxeString()));
+            self.initColorMap(Cdb.Class.getSkinInfo(remoteSkin.AsHaxeString()));
         }
 
 
@@ -142,8 +149,6 @@ namespace DeadCellsMultiplayerMod
         }
         private void hook_game_activateSubLevel(Hook_Game.orig_activateSubLevel orig, Game self, LevelMap linkId, int? shouldSave, Ref<bool> outAnim, Ref<bool> shouldSave2)
         {
-            roomsMap = linkId.rooms.ToString();
-            SendLevel(roomsMap);
             orig(self, linkId, shouldSave, outAnim, shouldSave2);
         }
 
@@ -162,7 +167,8 @@ namespace DeadCellsMultiplayerMod
         {
             kingInitialized = false;
             me = self;
-            Logger.Debug($"Self: {self}");
+            SendLevel(me._level.uniqId);
+            Logger.Debug($"HERO LEVEL uid: {self._level.uniqId}");
             orig(self, oldLevel);
             if (_ghost == null) _ghost = new GhostHero(game, me, Logger);
             _ghost.SetLabel(me, GameMenu.Username);
@@ -170,7 +176,7 @@ namespace DeadCellsMultiplayerMod
             if (_companionKing == null)
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
-                if (me._level.map != _companionKing._level.map)
+                if (me._level.uniqId != _companionKing._level.uniqId)
                 {
                     _companionKing.destroy();
                 }
@@ -178,7 +184,7 @@ namespace DeadCellsMultiplayerMod
             else
             {
                 _companionKing = _ghost.CreateGhostKing(me._level);
-                if (me._level.map != _companionKing._level.map)
+                if (me._level.uniqId != _companionKing._level.uniqId)
                 {
                     _companionKing.destroy();
                 }
@@ -234,14 +240,17 @@ namespace DeadCellsMultiplayerMod
             ReceiveGhostLevel();
 
             if (kingInitialized) return;
-            if (roomsMap != _remoteLevelText) return;
-            if (_companionKing == null || me == null || _ghost == null) return;
-            _companionKing = _ghost.reInitKing(me._level);
+            var hero = me;
+            if (hero == null || hero._level == null) return;
+            if (!_remoteLevelUid.HasValue) return;
+            if (hero._level.uniqId != _remoteLevelUid.Value) return;
+            if (_companionKing == null || _ghost == null) return;
+            _companionKing = _ghost.reInitKing(hero._level);
             kingInitialized = true;
         }
 
 
-        private void SendLevel(string lvl)
+        private void SendLevel(int lvl)
         {
             if (_netRole == NetRole.None) return;
             var net = _net;
@@ -259,13 +268,13 @@ namespace DeadCellsMultiplayerMod
             var ghost = _ghost;
             if (net == null || ghost == null || _companionKing == null) return;
 
-            if (!net.TryGetRemoteLevelString(out var remoteLevel) || string.IsNullOrWhiteSpace(remoteLevel))
+            if (!net.TryGetRemoteLevelUid(out var remoteLevelUid))
                 return;
 
-            if (string.Equals(_remoteLevelText, remoteLevel, StringComparison.Ordinal))
+            if (int.Equals(_remoteLevelUid, remoteLevelUid))
                 return;
 
-            _remoteLevelText = remoteLevel;
+            _remoteLevelUid = remoteLevelUid;
         }
 
 

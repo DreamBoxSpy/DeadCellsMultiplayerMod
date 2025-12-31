@@ -9,6 +9,7 @@ using DeadCellsMultiplayerMod;
 using HaxeProxy.Runtime;
 using Serilog;
 using dc;
+using System.Collections.Immutable;
 
 public enum NetRole { None, Host, Client }
 
@@ -33,7 +34,7 @@ public sealed class NetNode : IDisposable
     private readonly object _sync = new();
     private double _rx, _ry;
     private bool _hasRemote;
-    private string? _remoteLevelText;
+    private int? _remoteLevelText;
     private string? _remoteAnim;
     private int? _remoteAnimQueue;
     private bool? _remoteAnimG;
@@ -216,6 +217,21 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("BRDATA|", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = line["BRDATA|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        try
+                        {
+                            GameDataSync.ReceiveBrData(payload);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warning("[NetNode] Failed to handle BRDATA: {msg}", ex.Message);
+                        }
+                        continue;
+                    }
+
                     if (line.StartsWith("SEED|"))
                     {
                         var partsSeed = line.Split('|');
@@ -270,7 +286,7 @@ public sealed class NetNode : IDisposable
                         lock (_sync)
                         {
                             _hasRemote = true;
-                            _remoteLevelText = payload;
+                            _remoteLevelText = int.Parse(payload);
                         }
                         continue;
                     }
@@ -320,7 +336,7 @@ public sealed class NetNode : IDisposable
         catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
-            _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
+                _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
         }
         finally
         {
@@ -371,7 +387,7 @@ public sealed class NetNode : IDisposable
         _ = SendLineSafe(line);
     }
 
-    public void LevelSend(string lvl) => SendLevelId(lvl);
+    public void LevelSend(int lvl) => SendLevelId(lvl);
 
     public void SendSeed(int seed)
     {
@@ -436,7 +452,7 @@ public sealed class NetNode : IDisposable
         _log.Information("[NetNode] Sent Generate payload ({Length} bytes)", json.Length);
     }
 
-    public void SendLevelId(string levelId)
+    public void SendLevelId(int levelId)
     {
         if (_stream == null || _client == null || !_client.Connected)
         {
@@ -444,7 +460,7 @@ public sealed class NetNode : IDisposable
             return;
         }
 
-        var safe = levelId.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
+        var safe = levelId.ToString().Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
         SendRaw("LEVEL|" + safe);
     }
 
@@ -468,6 +484,18 @@ public sealed class NetNode : IDisposable
         SendRaw($"ANIM|{safe}|{queuePart}|{gPart}");
     }
 
+    public void SendBrData(string payload)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending BRDATA: no connected client");
+            return;
+        }
+
+        SendRaw("BRDATA|" + payload);
+        _log.Information("[NetNode] Sent BRDATA payload ({Length} bytes)", payload?.Length ?? 0);
+    }
+
     private void SendRaw(string payload)
     {
         var line = payload.EndsWith('\n') ? payload : payload + "\n";
@@ -483,12 +511,12 @@ public sealed class NetNode : IDisposable
         }
     }
 
-    public bool TryGetRemoteLevelString(out string? levelText)
+    public bool TryGetRemoteLevelUid(out int? levelUid)
     {
         lock (_sync)
         {
-            levelText = _remoteLevelText;
-            return _hasRemote && levelText != null;
+            levelUid = _remoteLevelText;
+            return _hasRemote && levelUid != null;
         }
     }
 

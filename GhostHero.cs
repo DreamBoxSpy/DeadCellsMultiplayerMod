@@ -26,7 +26,6 @@ namespace DeadCellsMultiplayerMod
 
 
 
-
         public GhostHero(dc.pr.Game game, Hero me, ILogger logger)
         {
             _game = game;
