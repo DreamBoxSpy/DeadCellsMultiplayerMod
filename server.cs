@@ -9,6 +9,7 @@ using DeadCellsMultiplayerMod;
 using HaxeProxy.Runtime;
 using Serilog;
 using dc;
+using System.Collections.Immutable;
 
 public enum NetRole { None, Host, Client }
 
@@ -33,7 +34,7 @@ public sealed class NetNode : IDisposable
     private readonly object _sync = new();
     private double _rx, _ry;
     private bool _hasRemote;
-    private string? _remoteLevelText;
+    private string? _remoteLevelId;
     private string? _remoteAnim;
     private int? _remoteAnimQueue;
     private bool? _remoteAnimG;
@@ -216,6 +217,21 @@ public sealed class NetNode : IDisposable
                         continue;
                     }
 
+                    if (line.StartsWith("BRDATA|", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = line["BRDATA|".Length..];
+                        lock (_sync) _hasRemote = true;
+                        try
+                        {
+                            GameDataSync.ReceiveBrData(payload);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warning("[NetNode] Failed to handle BRDATA: {msg}", ex.Message);
+                        }
+                        continue;
+                    }
+
                     if (line.StartsWith("SEED|"))
                     {
                         var partsSeed = line.Split('|');
@@ -270,7 +286,7 @@ public sealed class NetNode : IDisposable
                         lock (_sync)
                         {
                             _hasRemote = true;
-                            _remoteLevelText = payload;
+                            _remoteLevelId = payload;
                         }
                         continue;
                     }
@@ -320,14 +336,14 @@ public sealed class NetNode : IDisposable
         catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
-            _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
+                _log.Warning("[NetNode] RecvLoop error: {msg}", ex.Message);
         }
         finally
         {
             lock (_sync)
             {
                 _hasRemote = false;
-                _remoteLevelText = null;
+                _remoteLevelId = null;
                 _remoteAnim = null;
                 _remoteAnimQueue = null;
                 _remoteAnimG = null;
@@ -458,7 +474,6 @@ public sealed class NetNode : IDisposable
     {
         if (_stream == null || _client == null || !_client.Connected)
         {
-            _log.Information("[NetNode] Skip sending anim: no connected client");
             return;
         }
 
@@ -467,6 +482,18 @@ public sealed class NetNode : IDisposable
         var queuePart = queueAnim.HasValue ? queueAnim.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
         var gPart = g.HasValue ? (g.Value ? "1" : "0") : string.Empty;
         SendRaw($"ANIM|{safe}|{queuePart}|{gPart}");
+    }
+
+    public void SendBrData(string payload)
+    {
+        if (_stream == null || _client == null || !_client.Connected)
+        {
+            _log.Information("[NetNode] Skip sending BRDATA: no connected client");
+            return;
+        }
+
+        SendRaw("BRDATA|" + payload);
+        _log.Information("[NetNode] Sent BRDATA payload ({Length} bytes)", payload?.Length ?? 0);
     }
 
     private void SendRaw(string payload)
@@ -484,12 +511,12 @@ public sealed class NetNode : IDisposable
         }
     }
 
-    public bool TryGetRemoteLevelString(out string? levelText)
+    public bool TryGetRemoteLevelId(out string? levelId)
     {
         lock (_sync)
         {
-            levelText = _remoteLevelText;
-            return _hasRemote && levelText != null;
+            levelId = _remoteLevelId;
+            return _hasRemote && !string.IsNullOrEmpty(levelId);
         }
     }
 
@@ -534,7 +561,7 @@ public sealed class NetNode : IDisposable
         try { _stream?.Close(); } catch { }
         try { _client?.Close(); } catch { }
         try { _listener?.Stop(); } catch { }
-        GameDataSync.seed = 0;
+        GameDataSync.Seed = 0;
         _stream = null; _client = null; _listener = null;
         try { _sendLock.Dispose(); } catch { }
     }
