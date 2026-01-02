@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "DeadCellsMultiplayerMod": {
+      "commandName": "Project"
+    },
+    "配置文件 1": {
+      "commandName": "Executable",
+      "executablePath": "F:\\HKLab\\DeadCellsCoreModding\\bin\\core\\host\\startup\\DeadCellsModding.exe"
+    }
+  }
+}

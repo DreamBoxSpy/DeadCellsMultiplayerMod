@@ -10,37 +10,37 @@ using HaxeProxy.Runtime;
 using Serilog;
 using dc;
 using System.Collections.Immutable;
+using StreamJsonRpc;
+using DeadCellsMultiplayerMod.Rpc;
+using DeadCellsMultiplayerMod.Server;
+using DeadCellsMultiplayerMod.Client;
 
 public enum NetRole { None, Host, Client }
 
-public sealed class NetNode : IDisposable
+class NetNode : IDisposable
 {
     private readonly ILogger _log;
     private readonly NetRole _role;
 
     private TcpListener? _listener;   // host
     private TcpClient?   _client;     // client OR accepted
-    private NetworkStream? _stream;
 
     private readonly IPEndPoint _bindEp;   // host bind
     private readonly IPEndPoint _destEp;   // client connect
 
     private CancellationTokenSource? _cts;
     private Task? _acceptTask;
-    private Task? _recvTask;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private bool _disposed;
 
-    private readonly object _sync = new();
-    private double _rx, _ry;
-    private bool _hasRemote;
-    private string? _remoteLevelId;
-    private string? _remoteAnim;
-    private int? _remoteAnimQueue;
-    private bool? _remoteAnimG;
-    private bool _hasRemoteAnim;
-
-    public bool HasRemote { get { lock (_sync) return _hasRemote; } }
+    private JsonRpc? _rpc;
+    public GameClient? Client { get; set; }
+    public GameServer? Server { get; set; }
+    public string GUID { get; set; } = Guid.NewGuid().ToString();
+    public ISyncHostActions SyncHost { get; private set; } = null!;
+    public ISyncClientActions SyncClient { get; private set; } = null!;
+    public ILogger Logger => _log;
+    public bool HasRemote { get; set; }
     public bool IsAlive =>
         (_role == NetRole.Host && _listener != null) ||
         (_role == NetRole.Client && _client   != null);
@@ -107,20 +107,24 @@ public sealed class NetNode : IDisposable
                 var tcp = await _listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
                 tcp.NoDelay = true;
                 _client = tcp;
-                _stream = tcp.GetStream();
+
+                SyncClient = JsonRpc.Attach<ISyncClientActions>(tcp.GetStream());
+                SyncHost = new SyncHostActions(this);
+                _rpc = JsonRpc.Attach(tcp.GetStream(), SyncHost);
+                _rpc.SynchronizationContext = ModCore.Modules.Game.SynchronizationContext;
 
                 _log.Information("[NetNode] Host accepted {ep}", tcp.Client.RemoteEndPoint);
 
-                await SendLineSafe("WELCOME\n").ConfigureAwait(false);
+                await SyncClient.Print("Welcome");
+
                 if (_role == NetRole.Host && GameMenu.TryGetHostRunSeed(out var hostSeed))
                 {
-                    SendSeed(hostSeed);
+                    await SyncClient.SetSeed(hostSeed);
                 }
 
-                lock (_sync) _hasRemote = true;
+                HasRemote = true;
                 GameMenu.NotifyRemoteConnected(_role);
 
-                _recvTask = Task.Run(() => RecvLoop(ct));
                 break;
             }
         }
@@ -155,16 +159,18 @@ public sealed class NetNode : IDisposable
 
                 await tcp.ConnectAsync(_destEp.Address, _destEp.Port, timeoutCts.Token).ConfigureAwait(false);
                 _client = tcp;
-                _stream = tcp.GetStream();
+
+                SyncHost = JsonRpc.Attach<ISyncHostActions>(tcp.GetStream());
+                SyncClient = new SyncClientActions(this);
+                _rpc = JsonRpc.Attach(tcp.GetStream(), SyncClient);
+                _rpc.SynchronizationContext = ModCore.Modules.Game.SynchronizationContext;
 
                 _log.Information("[NetNode] Client connected to {dest}", _destEp);
 
-                await SendLineSafe("HELLO\n").ConfigureAwait(false);
+                await SyncHost.Print("Hello, World!");
 
-                lock (_sync) _hasRemote = true;
+                HasRemote = true;
                 GameMenu.NotifyRemoteConnected(_role);
-
-                _recvTask = Task.Run(() => RecvLoop(ct));
                 return;
             }
             catch (OperationCanceledException) { break; }
@@ -353,53 +359,8 @@ public sealed class NetNode : IDisposable
         }
     }
 
-    private async Task SendLineSafe(string line)
-    {
-        var stream = _stream;
-        if (stream == null) return;
-
-        var bytes = Encoding.UTF8.GetBytes(line);
-        bool locked = false;
-        try
-        {
-            await _sendLock.WaitAsync().ConfigureAwait(false);
-            locked = true;
-            await stream.WriteAsync(bytes.AsMemory(0, bytes.Length), CancellationToken.None).ConfigureAwait(false);
-            await stream.FlushAsync().ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException) { }
-        catch (Exception ex)
-        {
-            _log.Warning("[NetNode] send error: {msg}", ex.Message);
-        }
-        finally
-        {
-            if (locked) _sendLock.Release();
-        }
-    }
-
-    public void TickSend(double cx, double cy)
-    {
-        if (_stream == null || _client == null || !_client.Connected) return;
-        var line = string.Create(
-            System.Globalization.CultureInfo.InvariantCulture,
-            $"{cx}|{cy}\n");
-        _ = SendLineSafe(line);
-    }
-
     public void LevelSend(string lvl) => SendLevelId(lvl);
 
-    public void SendSeed(int seed)
-    {
-        if (_stream == null || _client == null || !_client.Connected)
-        {
-            _log.Information("[NetNode] Skip sending seed {Seed}: no connected client", seed);
-            return;
-        }
-        var line = $"SEED|{seed}\n";
-        _ = SendLineSafe(line);
-        _log.Information("[NetNode] Sent seed {Seed}", seed);
-    }
 
     public void SendUsername(string username)
     {
@@ -463,106 +424,14 @@ public sealed class NetNode : IDisposable
         var safe = levelId.Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
         SendRaw("LEVEL|" + safe);
     }
-
-    public void SendKick()
-    {
-        if (_stream == null || _client == null || !_client.Connected) return;
-        SendRaw("KICK");
-    }
-
-    public void SendAnim(string anim, int? queueAnim = null, bool? g = null)
-    {
-        if (_stream == null || _client == null || !_client.Connected)
-        {
-            return;
-        }
-
-        var safe = (anim ?? string.Empty).Replace("|", "/").Replace("\r", string.Empty).Replace("\n", string.Empty);
-        if (safe.Length == 0) safe = "idle";
-        var queuePart = queueAnim.HasValue ? queueAnim.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
-        var gPart = g.HasValue ? (g.Value ? "1" : "0") : string.Empty;
-        SendRaw($"ANIM|{safe}|{queuePart}|{gPart}");
-    }
-
-    public void SendBrData(string payload)
-    {
-        if (_stream == null || _client == null || !_client.Connected)
-        {
-            _log.Information("[NetNode] Skip sending BRDATA: no connected client");
-            return;
-        }
-
-        SendRaw("BRDATA|" + payload);
-        _log.Information("[NetNode] Sent BRDATA payload ({Length} bytes)", payload?.Length ?? 0);
-    }
-
-    private void SendRaw(string payload)
-    {
-        var line = payload.EndsWith('\n') ? payload : payload + "\n";
-        _ = SendLineSafe(line);
-    }
-
-    public bool TryGetRemote(out double rx, out double ry)
-    {
-        lock (_sync)
-        {
-            rx = _rx; ry = _ry;
-            return _hasRemote;
-        }
-    }
-
-    public bool TryGetRemoteLevelId(out string? levelId)
-    {
-        lock (_sync)
-        {
-            levelId = _remoteLevelId;
-            return _hasRemote && !string.IsNullOrEmpty(levelId);
-        }
-    }
-
-    public bool TryGetRemoteAnim(out string? anim, out int? queueAnim, out bool? g)
-    {
-        lock (_sync)
-        {
-            if (!_hasRemoteAnim)
-            {
-                anim = null; queueAnim = null; g = null;
-                return false;
-            }
-            anim = _remoteAnim;
-            queueAnim = _remoteAnimQueue;
-            g = _remoteAnimG;
-            _hasRemoteAnim = false;
-            return _hasRemote && anim != null;
-        }
-    }
-
-    private static bool TryParseBool(string text, out bool value)
-    {
-        if (string.Equals(text, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "true", StringComparison.OrdinalIgnoreCase))
-        {
-            value = true;
-            return true;
-        }
-        if (string.Equals(text, "0", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "false", StringComparison.OrdinalIgnoreCase))
-        {
-            value = false;
-            return true;
-        }
-        value = false;
-        return false;
-    }
-
+   
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         try { _cts?.Cancel(); } catch { }
-        try { _stream?.Close(); } catch { }
         try { _client?.Close(); } catch { }
         try { _listener?.Stop(); } catch { }
-        GameDataSync.Seed = 0;
-        _stream = null; _client = null; _listener = null;
         try { _sendLock.Dispose(); } catch { }
     }
 }

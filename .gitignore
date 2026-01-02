@@ -3,3 +3,5 @@ bin/
 tools_tmp/
 __decomp_gp/
 .vs/
+*.suo
+*.user
